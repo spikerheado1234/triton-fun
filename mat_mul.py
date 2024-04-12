@@ -84,11 +84,11 @@ def torch_matmul(x : torch.Tensor, y : torch.Tensor):
 
 
 ## We spawn a BLOCK_SIZE x BLOCK_SIZE GPU tile.
-BLOCK_SIZE = 16
+BLOCK_SIZE = 4
 GPU_ID = 0
-n = 32
-m = 32
-k = 32
+n = 16
+m = 16
+k = 16
 x = torch.rand((m,k), dtype=torch.float32).to(GPU_ID)
 y = torch.rand((k, n), dtype=torch.float32).to(GPU_ID)
 
