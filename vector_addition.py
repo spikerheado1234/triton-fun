@@ -42,8 +42,16 @@ def vector_add_launcher(x : torch.Tensor, y : torch.Tensor,
     ## For some reason, this doesn't work.
     #grid = (triton.cdiv(elements, BLOCK_SIZE),)
     grid = lambda meta : (triton.cdiv(elements, meta['BLOCK_SIZE']), )
-    vector_add_kernel[grid](x,y,output,elements,BLOCK_SIZE=b_size)
-    #add_kernel[grid](x,y,output,elements,BLOCK_SIZE=b_size)
+    compiled_func = vector_add_kernel[grid](x,y,output,elements,BLOCK_SIZE=b_size)
+    print(f'asm keys are: {compiled_func.asm.keys()}')
+    with open("vector_ptx_dump", "w+") as f:
+        f.write(compiled_func.asm["ptx"])
+    with open("vector_triton_ir_dump", "w+") as f:
+        f.write(compiled_func.asm["ttir"])
+    with open("vector_llvm_ir_dump", "w+") as f:
+        f.write(compiled_func.asm["llir"])
+    with open("vector_triton_gpu_ir_dump", "w+") as f:
+        f.write(compiled_func.asm["ttgir"])
     
     return output 
 

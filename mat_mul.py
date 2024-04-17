@@ -5,6 +5,7 @@ import triton.language as tl
 import torch
 import nvtx
 import pdb
+import time
 
 ### Here we are doing an: m * k by k * n mat-mul.
 @triton.jit
@@ -28,7 +29,6 @@ def mat_mul_kernel(x_ptr, y_ptr, output_ptr, m,n,k, BLOCK_SIZE: tl.constexpr):
 
     ## This is for masking within the loop itself.
     masked_k = tl.arange(0, inner_tile_dim)
-    #pdb.set_trace()
 
     for i in range(tl.cdiv(k, inner_tile_dim)):
 
@@ -73,7 +73,15 @@ def mat_mul_launcher(x : torch.Tensor, y : torch.Tensor, GPU_ID : int, BLOCK_SIZ
 
     grid = (triton.cdiv(m,BLOCK_SIZE), triton.cdiv(n, BLOCK_SIZE))
 
-    mat_mul_kernel[grid](x,y,output,m,n,k, BLOCK_SIZE=BLOCK_SIZE)
+    compiled = mat_mul_kernel[grid](x,y,output,m,n,k, BLOCK_SIZE=BLOCK_SIZE, num_warps=4)
+    with open("matmul_ptx_dump", "w+") as f:
+        f.write(compiled.asm["ptx"])
+    with open("matmul_triton_ir_dump", "w+") as f:
+        f.write(compiled.asm["ttir"])
+    with open("matmul_llvm_ir_dump", "w+") as f:
+        f.write(compiled.asm["llir"])
+    with open("matmul_triton_gpu_ir_dump", "w+") as f:
+        f.write(compiled.asm["ttgir"])
     
     return output
 
@@ -84,19 +92,25 @@ def torch_matmul(x : torch.Tensor, y : torch.Tensor):
 
 
 ## We spawn a BLOCK_SIZE x BLOCK_SIZE GPU tile.
-BLOCK_SIZE = 4
+BLOCK_SIZE = 16
 GPU_ID = 0
-n = 16
-m = 16
-k = 16
+n = 1024
+m = 1024
+k = 1024
 x = torch.rand((m,k), dtype=torch.float32).to(GPU_ID)
 y = torch.rand((k, n), dtype=torch.float32).to(GPU_ID)
 
-out_torch = torch_matmul(x,y)
-
-out_triton = mat_mul_launcher(x,y,GPU_ID, BLOCK_SIZE)
 torch.cuda.synchronize()
+torch_start = time.time()
+out_torch = torch_matmul(x,y)
+torch.cuda.synchronize()
+torch_duration = time.time() - torch_start
 
+torch.cuda.synchronize()
+triton_start = time.time()
+out_triton = mat_mul_launcher(x,y,GPU_ID,BLOCK_SIZE)
+torch.cuda.synchronize()
+triton_duration = time.time() - triton_start
+
+print(f'time taken for triton: {triton_duration:.4f}, time taken for torch: {torch_duration:.4f}')
 print(f'absolute max error: {torch.max(torch.abs(out_torch - out_triton))}')
-
-
