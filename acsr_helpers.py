@@ -6,7 +6,7 @@ import triton.language as tl
 import torch
 import numpy as np
 from dataclasses import dataclass
-from typing import Type, TypeAlias
+from typing import Type 
 from functools import reduce
 
 ## Here we have all the type-aliases used within this script. 
@@ -74,7 +74,7 @@ def instantiate_metadata(mask, BLOCK_HEIGHT : int):
     affine_indices_sToD : list[Type[AffineIndicesInt]] = [] ## Sparse to dense mapping.
     nnzs : list[int] = [] ## Number of non-zero values.
     ## TODO, need to add optimisations: span-specialisation and transformation-alignment.
-    for row in len(mask):
+    for row in range(len(mask)):
         ## We grab the first two non-zero elements.
         a = -1
         b = -1
@@ -88,23 +88,23 @@ def instantiate_metadata(mask, BLOCK_HEIGHT : int):
         assert a != -1 and b != -1, "Incorrect unpacking of affine-indices."
 
         ## Here we solve a system of linear equations.
-        affine_indices = np.linalg.solve(np.array([a, 1], [b, 1]), np.array([0,1]))
+        affine_indices = np.linalg.solve(np.array([[a, 1], [b, 1]]), np.array([0,1]))
         curr_nnz = reduce(lambda x,y : x+y, mask[row],0)
         affine_indices_dTos.append(AffineIndices(affine_indices[0],affine_indices[1], curr_nnz))
         affine_indices_sToD.append(AffineIndicesInt(round(1/affine_indices[0]), -affine_indices[1], curr_nnz))
         nnzs.append(curr_nnz)
 
-        return ACSR(affine_indices_dTos, affine_indices_sToD)
+    return ACSR(affine_indices_dTos, affine_indices_sToD)
 
 ## Now we have to send everything to the GPU!
-def create_acsr(mask : list[list[int]], BLOCK_HEIGHT : int):
+def create_acsr(mask : list[list[int]], BLOCK_HEIGHT : int, GPU_ID : int):
     acsr : ACSR = instantiate_metadata(mask, BLOCK_HEIGHT)
     ## We create 5 torch arrays to give to the GPU.
-    dTos_linear_transformations = torch.FloatTensor(acsr.get_dTos_linear_transformations())
-    dTos_translations = torch.Tensor(acsr.get_dTos_translations())
-    sTod_linear_transformations = torch.Tensor(acsr.get_sTod_linear_transformations())
-    sTod_translations = torch.Tensor(acsr.get_sTod_translations())
-    nnzs = torch.Tensor(acsr.get_nnzs())
+    dTos_linear_transformations = torch.FloatTensor(acsr.get_dTos_linear_transformations()).to(GPU_ID)
+    dTos_translations = torch.Tensor(acsr.get_dTos_translations()).to(GPU_ID)
+    sTod_linear_transformations = torch.Tensor(acsr.get_sTod_linear_transformations()).to(GPU_ID)
+    sTod_translations = torch.Tensor(acsr.get_sTod_translations()).to(GPU_ID)
+    nnzs = torch.Tensor(acsr.get_nnzs()).to(GPU_ID)
     return (dTos_linear_transformations,dTos_translations,
                 sTod_linear_transformations,sTod_translations,nnzs)  
 
@@ -116,8 +116,9 @@ if __name__ == "__main__":
     k = 10
     p = 2
     BLOCK_HEIGHT = 2
+    GPU_ID = 0
     mask = create_blocked_mask(n, p)
-    a,b,c,d,e = create_acsr(mask, BLOCK_HEIGHT)
+    a,b,c,d,e = create_acsr(mask, BLOCK_HEIGHT, GPU_ID)
     print(f'dTos a: {a}')
     print(f'dTos b: {b}')
     print(f'sTod a: {c}')
