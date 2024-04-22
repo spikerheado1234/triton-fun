@@ -137,7 +137,7 @@ def gen_block_mappings(mask : list[list[int]], BLOCK_HEIGHT : int,
 def rsddmm_launcher(x : torch.Tensor, 
                     y : torch.Tensor,
                     mask : list[list[int]], GPU_ID : int, 
-                    BLOCK_SIZE_Y : int, BLOCK_SIZE_X : int) -> torch.Tensor:
+                    BLOCK_SIZE_Y : int, BLOCK_SIZE_X : int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     ## First we create the output tensor.
 
     ## compute the trailing dimension length of the ACSR.
@@ -161,6 +161,9 @@ def rsddmm_launcher(x : torch.Tensor,
                             sTod_linear_transformations,sTod_translations,nnzs,
                             x.shape[0],y.shape[1],x.shape[1], tb_map_x, tb_map_y,
                             BLOCK_SIZE_Y=BLOCK_SIZE_Y, BLOCK_SIZE_X=BLOCK_SIZE_X, num_warps=2)
+
+    ## We return the sTod arrays for correctness checking only.
+    return (output, sTod_linear_transformations, sTod_translations)
 
 def truth(x : torch.Tensor, y: torch.Tensor) -> torch.Tensor:
     return torch.einsum('ab,bc -> ac',x,y)
@@ -191,11 +194,11 @@ def test(m: int, k : int, n : int, mask : list[list[int]], GPU_ID : int, BLOCK_S
     right : torch.Tensor = torch.randn((k,n)).to(GPU_ID)
 
     ## Generate the acsr.
-    rsddmm_output = rsddmm_launcher(left, right, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X)
+    rsddmm_output, sTod_linear_transformations, sTod_translations = rsddmm_launcher(left, right, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X)
 
     ## Compare against pytorch's einsum as ground truth.
     torch_output = truth(left, right)
-    assert is_correct(torch_output, rsddmm_output, mask), "Input is not within the threshold of correctness!"
+    assert is_correct(torch_output, rsddmm_output, mask, sTod_linear_transformations, sTod_translations), "Input is not within the threshold of correctness!"
 
 if __name__ == "__main__":
     ## Just a sample unit test over here.
