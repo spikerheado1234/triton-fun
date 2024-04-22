@@ -69,7 +69,6 @@ def rsddmm_kernel(x_ptr, y_ptr,
     ##   within a trion jitted function. We use tl.zeros instead.
     #col_idx = tl.full((BLOCK_SIZE_Y,), 0, tl.int32)
     col_idx = tl.zeros((BLOCK_SIZE_Y,), dtype=tl.int32)
-    #col_idx = tl.zeros((BLOCK_SIZE_Y,), dtype=tl.int32)
     col_idx = col_idx[:,None] + tl.arange(0, BLOCK_SIZE_X)[None,:] + bx_start 
 
     ## Step 2
@@ -85,7 +84,13 @@ def rsddmm_kernel(x_ptr, y_ptr,
     ## First, we check for OOB conditions due to translations.
     output_mask = col_idx >= 0
     ## Next, we check if a column index maps to a valid contraction (modulo check).
-    output_mask = output_mask & (col_idx % linear_transforms[:,None] == 0)
+
+    ## Unfortunately, broadcast semantics don't apply to the "==" operator.
+    ##    So we have to do design a new bolean operator: ~op1 && ~op2
+    op_one = col_idx > linear_transforms[:,None]
+    op_two = col_idx < linear_transforms[:,None]
+    output_mask = output_mask & ((not op_one) & (not op_two))
+    #output_mask = output_mask & (col_idx % linear_transforms[:,None] == 0)
     ## Lastly, we check for OOB due to exceeding nnz count.
     output_mask = output_mask & (col_idx < nnz[:,None])
 
