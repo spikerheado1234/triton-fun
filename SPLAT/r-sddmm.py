@@ -17,7 +17,6 @@ def rsddmm_kernel(x_ptr, y_ptr,
                     m, n, k, tb_mapping_x, tb_mapping_y, 
                     BLOCK_SIZE_Y : tl.constexpr, BLOCK_SIZE_X : tl.constexpr):
     
-    #pdb.set_trace()
     bx = tl.program_id(axis=0)
 
     ## We first unpack the tb_maps to uncover the top left x and y coordinate.
@@ -47,13 +46,7 @@ def rsddmm_kernel(x_ptr, y_ptr,
         x_ptrs += inner_tile_dim
         y_ptrs += inner_tile_dim*n
 
-    ## These are the dTOs linear_transformations and translations.
-    ## This uses the dTOs affine-indices. We do not use this now to read less data.
-    #linear_transforms = tl.load(dTos_linear_trf+by_start+tl.arange(0,BLOCK_SIZE_Y), 
-    #                            mask=by_start+tl.arange(0,BLOCK_SIZE_Y)<m, other=0.0)
-    #translations = tl.load(dTos_translations+by_start+tl.arange(0, BLOCK_SIZE_Y),
-    #                       mask=by_start+tl.arange(0,BLOCK_SIZE_Y)<m,other=0.0)
-    ## This uses the sTOd affine-indices
+    ## This uses the sTOd affine-indices for scaling the indices of where to store.
     linear_transforms = tl.load(sTod_linear_trf+by_start+tl.arange(0,BLOCK_SIZE_Y), 
                                 mask=by_start+tl.arange(0,BLOCK_SIZE_Y)<m, other=0.0)
     translations = tl.load(sTod_translations+by_start+tl.arange(0, BLOCK_SIZE_Y),
@@ -81,7 +74,7 @@ def rsddmm_kernel(x_ptr, y_ptr,
 
     ## Step 2
     col_idx /= linear_transforms[:,None] 
-    col_idx -= translations[:,None]
+    col_idx -= translations[:,None].to(torch.int64)
 
     ## Step 3
     output_ptrs = col_idx + tl.arange(0, BLOCK_SIZE_Y)[:,None]*n + by_start*n
@@ -90,7 +83,7 @@ def rsddmm_kernel(x_ptr, y_ptr,
 
     ## Step 4. 
     ## First, we check for OOB conditions due to translations.
-    output_mask = col_idx > 0
+    output_mask = col_idx >= 0
     ## Next, we check if a column index maps to a valid contraction (modulo check).
     output_mask = output_mask & (col_idx % linear_transforms[:,None] == 0)
     ## Lastly, we check for OOB due to exceeding nnz count.
@@ -196,7 +189,6 @@ def test(m: int, k : int, n : int, mask : list[list[int]], GPU_ID : int, BLOCK_S
 
     ## Generate the acsr.
     rsddmm_output, sTod_linear_transformations, sTod_translations = rsddmm_launcher(left, right, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X)
-    pdb.set_trace()
 
     ## Compare against pytorch's einsum as ground truth.
     torch_output = truth(left, right)
