@@ -180,8 +180,9 @@ def is_correct(out_torch : torch.Tensor, out_rsddmm : torch.Tensor,
     for row in range(len(mask)):
         for nnz_col_id in range(len(out_rsddmm_list[0])):
             ## We convert to the dense index.
-            dense_col_id = nnz_col_id * sTod_linear_transformations_list[row] + sTod_translations_list[row]
+            dense_col_id : int = round(nnz_col_id * sTod_linear_transformations_list[row] + sTod_translations_list[row])
             if abs(out_torch_list[row][dense_col_id] - out_rsddmm_list[row][nnz_col_id]) > 1e-3:
+                print(f'failed at: {row} {dense_col_id}')
                 return False
 
     return True
@@ -195,10 +196,11 @@ def test(m: int, k : int, n : int, mask : list[list[int]], GPU_ID : int, BLOCK_S
 
     ## Generate the acsr.
     rsddmm_output, sTod_linear_transformations, sTod_translations = rsddmm_launcher(left, right, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X)
+    pdb.set_trace()
 
     ## Compare against pytorch's einsum as ground truth.
     torch_output = truth(left, right)
-    assert is_correct(torch_output, rsddmm_output, mask, sTod_linear_transformations, sTod_translations), "Input is not within the threshold of correctness!"
+    assert is_correct(torch_output, rsddmm_output, sTod_linear_transformations, sTod_translations, mask), "Input is not within the threshold of correctness!"
 
 if __name__ == "__main__":
     ## Just a sample unit test over here.
