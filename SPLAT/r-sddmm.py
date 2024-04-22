@@ -87,8 +87,8 @@ def rsddmm_kernel(x_ptr, y_ptr,
 
     ## Unfortunately, broadcast semantics don't apply to the "==" operator.
     ##    So we have to do design a new bolean operator: ~op1 && ~op2
-    op_one = col_idx > linear_transforms[:,None]
-    op_two = col_idx < linear_transforms[:,None]
+    op_one = (col_idx % linear_transforms[:, None]).to(torch.int64) > 0
+    op_two = (col_idx % linear_transforms[:,None]).to(torch.int64) < 0
     output_mask = output_mask & ((not op_one) & (not op_two))
     #output_mask = output_mask & (col_idx % linear_transforms[:,None] == 0)
     ## Lastly, we check for OOB due to exceeding nnz count.
@@ -163,8 +163,8 @@ def rsddmm_launcher(x : torch.Tensor,
     ## We return the sTod arrays for correctness checking only.
     return (output, sTod_linear_transformations, sTod_translations)
 
-def truth(x : torch.Tensor, y: torch.Tensor) -> torch.Tensor:
-    return torch.einsum('ab,bc -> ac',x,y)
+def truth(x : torch.Tensor, y: torch.Tensor, GPU_ID : int) -> torch.Tensor:
+    return torch.einsum('ab,bc -> ac',x,y).to(GPU_ID)
 
 ## Define checker later, figure out good practice. TODO.
 def is_correct(out_torch : torch.Tensor, out_rsddmm : torch.Tensor, 
@@ -191,12 +191,11 @@ def test(m: int, k : int, n : int, mask : list[list[int]], GPU_ID : int, BLOCK_S
     assert m==n, "We only need to consider the case when m=n."
     left : torch.Tensor = torch.randn((m,k)).to(GPU_ID)
     right : torch.Tensor = torch.randn((k,n)).to(GPU_ID)
-
-    ## Generate the acsr.
-    rsddmm_output, sTod_linear_transformations, sTod_translations = rsddmm_launcher(left, right, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X)
-
     ## Compare against pytorch's einsum as ground truth.
-    torch_output = truth(left, right)
+    torch_output = truth(left, right, GPU_ID)
+
+    ## Call the rsddmm launcher.
+    rsddmm_output, sTod_linear_transformations, sTod_translations = rsddmm_launcher(left, right, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X)
     assert is_correct(torch_output, rsddmm_output, sTod_linear_transformations, sTod_translations, mask), "Input is not within the threshold of correctness!"
 
 if __name__ == "__main__":
