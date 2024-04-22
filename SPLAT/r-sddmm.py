@@ -4,23 +4,25 @@ This is a fun implementation of the RSDDMM kernel described in my paper, SPLAT.
 
 import triton
 import triton.language as tl
-from acsr_helpers import create_blocked_mask
+from acsr_helpers import create_blocked_mask, create_acsr
 from functools import reduce
 import torch 
+import pdb
 
 ## This is a matrix multiplication of: m*k by k*n -> m*n matrix. NOTE, this is a general mat-mul kernel. 
-@triton.jit
+@triton.jit(interpret=True)
 def rsddmm_kernel(x_ptr, y_ptr, 
                     out_ptr, dTos_linear_trf, dTos_translations, 
                     sTod_linear_trf, sTod_translations, nnzs,
                     m, n, k, tb_mapping_x, tb_mapping_y, 
                     BLOCK_SIZE_Y : tl.constexpr, BLOCK_SIZE_X : tl.constexpr):
-
+    
+    #pdb.set_trace()
     bx = tl.program_id(axis=0)
 
     ## We first unpack the tb_maps to uncover the top left x and y coordinate.
-    bx_start = tl.load(tb_mapping_x+bx, mask=tl.full((1,), True, tl.bool))
-    by_start = tl.load(tb_mapping_y+bx, mask=tl.full((1,), True, tl.bool))
+    bx_start : tl.int32 = tl.load(tb_mapping_x+bx)
+    by_start : tl.int32 = tl.load(tb_mapping_y+bx)
 
     inner_tile_dim : tl.constexpr = 128
 
@@ -68,18 +70,23 @@ def rsddmm_kernel(x_ptr, y_ptr,
     ## Fourth: We generate the mask.
     ## Fifth: We store into the ACSR array.
 
-    ## Temporarily comment these out.
-    ##out_ptrs = (by_start*n + tl.arange(0,BLOCK_SIZE_Y)[None,:]*n) + (bx_start + tl.arange(0,BLOCK_SIZE_X)[:,None])
-
     ## Step 1
-    col_idx = tl.full((BLOCK_SIZE_Y, 1),0, tl.int32) + tl.arange(0, BLOCK_SIZE_X)[None,:] + bx_start 
+
+    ## Interestingly, this line throws a ValueError thinking its not wrapped
+    ##   within a trion jitted function. We use tl.zeros instead.
+    #col_idx = tl.full((BLOCK_SIZE_Y,), 0, tl.int32)
+    col_idx = tl.zeros((BLOCK_SIZE_Y,), dtype=tl.int32)
+    #col_idx = tl.zeros((BLOCK_SIZE_Y,), dtype=tl.int32)
+    col_idx = col_idx[:,None] + tl.arange(0, BLOCK_SIZE_X)[None,:] + bx_start 
 
     ## Step 2
     col_idx /= linear_transforms[:,None] 
     col_idx -= translations[:,None]
 
     ## Step 3
-    output_ptrs = col_idx + tl.arange(0, BLOCK_SIZE_Y)[:,None]*n + by_start*n 
+    output_ptrs = col_idx + tl.arange(0, BLOCK_SIZE_Y)[:,None]*n + by_start*n
+    ## Type casting required for tl.store compatibililty.
+    output_ptrs = output_ptrs.to(torch.int64)
 
     ## Step 4. 
     ## First, we check for OOB conditions due to translations.
@@ -91,7 +98,7 @@ def rsddmm_kernel(x_ptr, y_ptr,
 
     tl.store(out_ptr + output_ptrs, accumulator, mask=output_mask)
 
-def naive_block_mappings(mask : list[list[int]], BLOCK_HEIGHT : int, BLOCK_WIDTH : int) -> tuple[torch.Tensor, torch.Tensor]:
+def naive_block_mappings(mask : list[list[int]], BLOCK_HEIGHT : int, BLOCK_WIDTH : int, GPU_ID : int) -> tuple[torch.Tensor, torch.Tensor]:
     x_coords = []
     y_coords = []
 
@@ -120,17 +127,15 @@ def naive_block_mappings(mask : list[list[int]], BLOCK_HEIGHT : int, BLOCK_WIDTH
 
     assert len(x_coords) == len(y_coords) and len(x_coords) > 0, "Issues with generating arrangement!"
 
-    return (torch.Tensor(x_coords), torch.Tensor(y_coords))
+    return (torch.tensor(x_coords, dtype=torch.int32).to(GPU_ID), torch.tensor(y_coords, dtype=torch.int32).to(GPU_ID))
 
 ## for now, we just do a simple naive tiling, TODO, change to SPLAT's special tiling later.
 def gen_block_mappings(mask : list[list[int]], BLOCK_HEIGHT : int, 
-                        BLOCK_WIDTH : int, is_naive : bool = True) -> tuple[torch.Tensor, torch.Tensor]:
-    return naive_block_mappings(mask, BLOCK_HEIGHT, BLOCK_WIDTH)
+        BLOCK_WIDTH : int, GPU_ID : int, is_naive : bool = True) -> tuple[torch.Tensor, torch.Tensor]:
+    return naive_block_mappings(mask, BLOCK_HEIGHT, BLOCK_WIDTH, GPU_ID)
 
 def rsddmm_launcher(x : torch.Tensor, 
                     y : torch.Tensor,
-                    dTos_linear_trf : torch.Tensor, dTos_translations : torch.Tensor, 
-                    sTod_linear_trf : torch.Tensor, sTod_translations : torch.Tensor, nnzs : torch.Tensor, 
                     mask : list[list[int]], GPU_ID : int, 
                     BLOCK_SIZE_Y : int, BLOCK_SIZE_X : int) -> torch.Tensor:
     ## First we create the output tensor.
@@ -141,7 +146,10 @@ def rsddmm_launcher(x : torch.Tensor,
     output : torch.Tensor = torch.empty((len(mask), trailing_dim)).to(GPU_ID)
 
     ## Next, we compute the tiling blocks.
-    tb_map_x, tb_map_y = gen_block_mappings(mask, BLOCK_SIZE_Y, BLOCK_SIZE_X)
+    tb_map_x, tb_map_y = gen_block_mappings(mask, BLOCK_SIZE_Y, BLOCK_SIZE_X, GPU_ID)
+
+    ## Finally, we instantiate the acsr metadata.
+    dTos_linear_transformations, dTos_translations, sTod_linear_transformations, sTod_translations, nnzs = create_acsr(mask, BLOCK_SIZE_Y, GPU_ID)
 
     assert tb_map_x.shape == tb_map_y.shape, "Incorrect tiling arrangement!"
 
@@ -149,10 +157,10 @@ def rsddmm_launcher(x : torch.Tensor,
     grid_dim = (tb_map_x.shape[0],)
 
     rsddmm_kernel[grid_dim](x,y,output, 
-                            dTos_linear_trf,dTos_translations, 
-                            sTod_linear_trf,sTod_translations,nnzs,
-                            x.shape[0],y.shape[1],x.shape[1],
-                            BLOCK_SIZE_Y, BLOCK_SIZE_X, num_warps=4)
+                            dTos_linear_transformations,dTos_translations, 
+                            sTod_linear_transformations,sTod_translations,nnzs,
+                            x.shape[0],y.shape[1],x.shape[1], tb_map_x, tb_map_y,
+                            BLOCK_SIZE_Y=BLOCK_SIZE_Y, BLOCK_SIZE_X=BLOCK_SIZE_X, num_warps=2)
 
 def truth(x : torch.Tensor, y: torch.Tensor) -> torch.Tensor:
     return torch.einsum('ab,bc -> ac',x,y)
@@ -176,30 +184,37 @@ def is_correct(out_torch : torch.Tensor, out_rsddmm : torch.Tensor,
     return True
 
 ## Multiply a: m*k and k*n matrix.
-def test(m: int, k : int, n : int, mask : list[list[int]]):
+def test(m: int, k : int, n : int, mask : list[list[int]], GPU_ID : int, BLOCK_SIZE_Y : int, BLOCK_SIZE_X : int):
     ## Some simple test-cases for me to try out.
     assert m==n, "We only need to consider the case when m=n."
-    left : torch.Tensor = torch.randn((m,k))
-    right : torch.Tensor = torch.randn((k,n))
+    left : torch.Tensor = torch.randn((m,k)).to(GPU_ID)
+    right : torch.Tensor = torch.randn((k,n)).to(GPU_ID)
 
+    ## Generate the acsr.
+    rsddmm_output = rsddmm_launcher(left, right, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X)
+
+    ## Compare against pytorch's einsum as ground truth.
     torch_output = truth(left, right)
-    rsddmm_output = rsddmm_launcher(left, right)
     assert is_correct(torch_output, rsddmm_output, mask), "Input is not within the threshold of correctness!"
-
 
 if __name__ == "__main__":
     ## Just a sample unit test over here.
 
     ## Small unit-test
     def test_one():
-        ## We multiply: m*k by k*n -> m*n matrix.
+        ## Basice parameters to multiply: m*k by k*n -> m*n matrix.
         n: int = 10
         m: int = 10
         k: int = 10
         p: int = 2 ## Sparsity parameter.
+        GPU_ID : int = 0
+        BLOCK_SIZE_Y : int = 16
+        BLOCK_SIZE_X : int = 16
+
+        ## Instantiate a mask.
         mask = create_blocked_mask(n, p)
 
-        test(m, k, n, mask)
+        test(m, k, n, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X)
 
     test_one()
 
