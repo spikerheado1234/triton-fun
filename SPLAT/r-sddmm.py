@@ -337,6 +337,7 @@ if __name__ == "__main__":
 
         test(m, k, n, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X)
 
+    ## These are pretty small tests.
     test_one()
     print('test one passed', flush=True)
     test_two()
@@ -355,3 +356,56 @@ if __name__ == "__main__":
     print('test eight passed', flush=True)
     test_nine()
     print('test nine passed', flush=True)
+
+    ## Larger tests.
+    def test_ten():
+        ## Basice parameters to multiply: m*k by k*n -> m*n matrix.
+        n: int = 1024
+        m: int = 1024
+        k: int = 1024
+        p: int = 256 ## Sparsity parameter.
+        GPU_ID : int = 0
+        BLOCK_SIZE_Y : int = 16
+        BLOCK_SIZE_X : int = 16
+
+        ## Instantiate a mask.
+        mask = create_blocked_mask(n, p)
+
+        test(m, k, n, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X)
+
+    def test_eleven():
+        ## Basice parameters to multiply: m*k by k*n -> m*n matrix.
+        n: int = 1024
+        m: int = 1024
+        k: int = 1024
+        p: int = 328 ## Sparsity parameter.
+        GPU_ID : int = 0
+        BLOCK_SIZE_Y : int = 16
+        BLOCK_SIZE_X : int = 16
+
+        ## Instantiate a mask.
+        mask = create_blocked_mask(n, p)
+
+        test(m, k, n, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X)
+
+    def test_twelve():
+        ## Basice parameters to multiply: m*k by k*n -> m*n matrix.
+        n: int = 1024
+        m: int = 1024
+        k: int = 1024
+        p: int = 512 ## Sparsity parameter.
+        GPU_ID : int = 0
+        BLOCK_SIZE_Y : int = 16
+        BLOCK_SIZE_X : int = 16
+
+        ## Instantiate a mask.
+        mask = create_blocked_mask(n, p)
+
+        test(m, k, n, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X)
+
+    test_ten()
+    print('test ten passed', flush=True)
+    test_eleven()
+    print('test eleven passed', flush=True)
+    test_twelve()
+    print('test twelve passed', flush=True)
