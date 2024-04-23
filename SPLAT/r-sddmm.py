@@ -90,7 +90,6 @@ def rsddmm_kernel(x_ptr, y_ptr,
     op_one = (col_idx % linear_transforms[:, None]).to(torch.int64) > 0
     op_two = (col_idx % linear_transforms[:,None]).to(torch.int64) < 0
     output_mask = output_mask & ((not op_one) & (not op_two))
-    #output_mask = output_mask & (col_idx % linear_transforms[:,None] == 0)
     ## Lastly, we check for OOB due to exceeding nnz count.
     output_mask = output_mask & (col_idx < nnz[:,None])
 
