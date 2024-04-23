@@ -278,7 +278,12 @@ if __name__ == "__main__":
         test(m, k, n, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X)
 
     test_one()
+    print('test one passed')
     test_two()
+    print('test two passed')
     test_three()
+    print('test three passed')
     test_four()
+    print('test four passed')
     test_five()
+    print('test five passed')
