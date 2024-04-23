@@ -201,7 +201,7 @@ def test(m: int, k : int, n : int, mask : list[list[int]], GPU_ID : int, BLOCK_S
 if __name__ == "__main__":
     ## Just a sample unit test over here.
 
-    ## Small unit-test
+    ## Small unit-tests
     def test_one():
         ## Basice parameters to multiply: m*k by k*n -> m*n matrix.
         n: int = 10
@@ -217,6 +217,68 @@ if __name__ == "__main__":
 
         test(m, k, n, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X)
 
-    test_one()
+    def test_two():
+        ## Basice parameters to multiply: m*k by k*n -> m*n matrix.
+        n: int = 10
+        m: int = 10
+        k: int = 10
+        p: int = 5 ## Sparsity parameter.
+        GPU_ID : int = 0
+        BLOCK_SIZE_Y : int = 16
+        BLOCK_SIZE_X : int = 16
 
-    ## TODO, add more unit-tests and debug properly here.
+        ## Instantiate a mask.
+        mask = create_blocked_mask(n, p)
+
+        test(m, k, n, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X)
+
+    def test_three():
+        ## Basice parameters to multiply: m*k by k*n -> m*n matrix.
+        n: int = 10
+        m: int = 10
+        k: int = 10
+        p: int = 7 ## Sparsity parameter.
+        GPU_ID : int = 0
+        BLOCK_SIZE_Y : int = 16
+        BLOCK_SIZE_X : int = 16
+
+        ## Instantiate a mask.
+        mask = create_blocked_mask(n, p)
+
+        test(m, k, n, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X)
+
+    def test_four():
+        ## Basice parameters to multiply: m*k by k*n -> m*n matrix.
+        n: int = 16
+        m: int = 16
+        k: int = 16
+        p: int = 5 ## Sparsity parameter.
+        GPU_ID : int = 0
+        BLOCK_SIZE_Y : int = 16
+        BLOCK_SIZE_X : int = 16
+
+        ## Instantiate a mask.
+        mask = create_blocked_mask(n, p)
+
+        test(m, k, n, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X)
+
+    def test_five():
+        ## Basice parameters to multiply: m*k by k*n -> m*n matrix.
+        n: int = 16
+        m: int = 16
+        k: int = 16
+        p: int = 16 ## Sparsity parameter.
+        GPU_ID : int = 0
+        BLOCK_SIZE_Y : int = 16
+        BLOCK_SIZE_X : int = 16
+
+        ## Instantiate a mask.
+        mask = create_blocked_mask(n, p)
+
+        test(m, k, n, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X)
+
+    test_one()
+    test_two()
+    test_three()
+    test_four()
+    test_five()
