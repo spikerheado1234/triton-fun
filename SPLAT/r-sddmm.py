@@ -76,8 +76,6 @@ def rsddmm_kernel(x_ptr, y_ptr,
     col_idx -= translations[:,None].to(torch.int64)
 
     ## Step 3 
-    ## This is the problematic and buggy step.
-    #output_ptrs = col_idx + tl.arange(0, BLOCK_SIZE_Y)[:,None]*n + by_start*n
     output_ptrs = col_idx + tl.arange(0, BLOCK_SIZE_Y)[:,None]*trailing_dim + by_start*trailing_dim
     ## Type casting required for tl.store compatibililty.
     output_ptrs = output_ptrs.to(torch.int64)
