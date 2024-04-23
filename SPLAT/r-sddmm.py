@@ -277,6 +277,66 @@ if __name__ == "__main__":
 
         test(m, k, n, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X)
 
+    def test_six():
+        ## Basice parameters to multiply: m*k by k*n -> m*n matrix.
+        n: int = 32
+        m: int = 32
+        k: int = 32
+        p: int = 10 ## Sparsity parameter.
+        GPU_ID : int = 0
+        BLOCK_SIZE_Y : int = 16
+        BLOCK_SIZE_X : int = 16
+
+        ## Instantiate a mask.
+        mask = create_blocked_mask(n, p)
+
+        test(m, k, n, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X)
+
+    def test_seven():
+        ## Basice parameters to multiply: m*k by k*n -> m*n matrix.
+        n: int = 32
+        m: int = 32
+        k: int = 32
+        p: int = 20 ## Sparsity parameter.
+        GPU_ID : int = 0
+        BLOCK_SIZE_Y : int = 16
+        BLOCK_SIZE_X : int = 16
+
+        ## Instantiate a mask.
+        mask = create_blocked_mask(n, p)
+
+        test(m, k, n, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X)
+
+    def test_eight():
+        ## Basice parameters to multiply: m*k by k*n -> m*n matrix.
+        n: int = 32
+        m: int = 32
+        k: int = 32
+        p: int = 32 ## Sparsity parameter.
+        GPU_ID : int = 0
+        BLOCK_SIZE_Y : int = 16
+        BLOCK_SIZE_X : int = 16
+
+        ## Instantiate a mask.
+        mask = create_blocked_mask(n, p)
+
+        test(m, k, n, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X)
+
+    def test_nine():
+        ## Basice parameters to multiply: m*k by k*n -> m*n matrix.
+        n: int = 128
+        m: int = 128
+        k: int = 128
+        p: int = 57 ## Sparsity parameter.
+        GPU_ID : int = 0
+        BLOCK_SIZE_Y : int = 16
+        BLOCK_SIZE_X : int = 16
+
+        ## Instantiate a mask.
+        mask = create_blocked_mask(n, p)
+
+        test(m, k, n, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X)
+
     test_one()
     print('test one passed', flush=True)
     test_two()
@@ -287,3 +347,11 @@ if __name__ == "__main__":
     print('test four passed', flush=True)
     test_five()
     print('test five passed', flush=True)
+    test_six()
+    print('test six passed', flush=True)
+    test_seven()
+    print('test seven passed', flush=True)
+    test_eight()
+    print('test eight passed', flush=True)
+    test_nine()
+    print('test nine passed', flush=True)
