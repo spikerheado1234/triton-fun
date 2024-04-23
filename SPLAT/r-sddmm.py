@@ -14,7 +14,7 @@ import pdb
 def rsddmm_kernel(x_ptr, y_ptr, 
                     out_ptr, dTos_linear_trf, dTos_translations, 
                     sTod_linear_trf, sTod_translations, nnzs,
-                    m, n, k, tb_mapping_x, tb_mapping_y, 
+                    m, n, k, trailing_dim, tb_mapping_x, tb_mapping_y, 
                     BLOCK_SIZE_Y : tl.constexpr, BLOCK_SIZE_X : tl.constexpr):
     
     bx = tl.program_id(axis=0)
@@ -77,7 +77,8 @@ def rsddmm_kernel(x_ptr, y_ptr,
 
     ## Step 3 
     ## This is the problematic and buggy step.
-    output_ptrs = col_idx + tl.arange(0, BLOCK_SIZE_Y)[:,None]*n + by_start*n
+    #output_ptrs = col_idx + tl.arange(0, BLOCK_SIZE_Y)[:,None]*n + by_start*n
+    output_ptrs = col_idx + tl.arange(0, BLOCK_SIZE_Y)[:,None]*trailing_dim + by_start*trailing_dim
     ## Type casting required for tl.store compatibililty.
     output_ptrs = output_ptrs.to(torch.int64)
 
@@ -158,7 +159,7 @@ def rsddmm_launcher(x : torch.Tensor,
     rsddmm_kernel[grid_dim](x,y,output, 
                             dTos_linear_transformations,dTos_translations, 
                             sTod_linear_transformations,sTod_translations,nnzs,
-                            x.shape[0],y.shape[1],x.shape[1], tb_map_x, tb_map_y,
+                            x.shape[0],y.shape[1],x.shape[1], trailing_dim, tb_map_x, tb_map_y,
                             BLOCK_SIZE_Y=BLOCK_SIZE_Y, BLOCK_SIZE_X=BLOCK_SIZE_X, num_warps=2)
 
     ## We return the sTod arrays for correctness checking only.
@@ -194,11 +195,9 @@ def test(m: int, k : int, n : int, mask : list[list[int]], GPU_ID : int, BLOCK_S
     right : torch.Tensor = torch.randn((k,n)).to(GPU_ID)
     ## Compare against pytorch's einsum as ground truth.
     torch_output = truth(left, right, GPU_ID)
-    torch.cuda.synchronize()
 
     ## Call the rsddmm launcher.
     rsddmm_output, sTod_linear_transformations, sTod_translations = rsddmm_launcher(left, right, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X)
-    torch.cuda.synchronize()
     assert is_correct(torch_output, rsddmm_output, sTod_linear_transformations, sTod_translations, mask), "Input is not within the threshold of correctness!"
 
 if __name__ == "__main__":
