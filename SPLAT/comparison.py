@@ -59,7 +59,7 @@ def benchmark(pattern : str, sequence_length : int,
               BLOCK_SIZE_X : int, GPU_ID : int):
     
     sparsity_parameter : int = 2
-    while sparsity_parameter < sequence_length:
+    while sparsity_parameter <= sequence_length:
         print(f'sparsity parameter: {sparsity_parameter}')
         left : torch.Tensor = torch.randn((sequence_length, sequence_length)).to(GPU_ID)
         right : torch.Tensor = torch.randn((sequence_length, sequence_length)).to(GPU_ID)
