@@ -134,7 +134,7 @@ def gen_block_mappings(mask : list[list[int]], BLOCK_HEIGHT : int,
 def rsddmm_launcher(x : torch.Tensor, 
                     y : torch.Tensor,
                     mask : list[list[int]], GPU_ID : int, 
-                    BLOCK_SIZE_Y : int, BLOCK_SIZE_X : int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+                    BLOCK_SIZE_Y : int, BLOCK_SIZE_X : int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     ## First we create the output tensor.
 
     ## compute the trailing dimension length of the ACSR.
@@ -160,7 +160,7 @@ def rsddmm_launcher(x : torch.Tensor,
                             BLOCK_SIZE_Y=BLOCK_SIZE_Y, BLOCK_SIZE_X=BLOCK_SIZE_X, num_warps=2)
 
     ## We return the sTod arrays for correctness checking only.
-    return (output, sTod_linear_transformations, sTod_translations)
+    return (output, sTod_linear_transformations, sTod_translations, nnzs)
 
 def truth(x : torch.Tensor, y: torch.Tensor, GPU_ID : int) -> torch.Tensor:
     return torch.einsum('ab,bc -> ac',x,y).to(GPU_ID)
@@ -168,17 +168,18 @@ def truth(x : torch.Tensor, y: torch.Tensor, GPU_ID : int) -> torch.Tensor:
 ## Define checker later, figure out good practice. TODO.
 def is_correct(out_torch : torch.Tensor, out_rsddmm : torch.Tensor, 
                 sTod_linear_transofrmations : torch.Tensor, 
-                sTod_translations : torch.Tensor, mask : list[list[int]]) -> bool:
+                sTod_translations : torch.Tensor, nnzs: torch.Tensor, mask : list[list[int]]) -> bool:
     out_torch_list = out_torch.tolist() ## Question: What are the sizes of these tensors?!
     out_rsddmm_list = out_rsddmm.tolist()
     sTod_linear_transformations_list = sTod_linear_transofrmations.tolist()
     sTod_translations_list = sTod_translations.tolist()
+    nnzs_list = nnzs.tolist()
 
     for row in range(len(mask)):
         for nnz_col_id in range(len(out_rsddmm_list[0])):
             ## We convert to the dense index.
             dense_col_id : int = round(nnz_col_id * sTod_linear_transformations_list[row] + sTod_translations_list[row])
-            if abs(out_torch_list[row][dense_col_id] - out_rsddmm_list[row][nnz_col_id]) > 1e-3 and mask[row][nnz_col_id]:
+            if nnz_col_id < nnzs_list[row] and abs(out_torch_list[row][dense_col_id] - out_rsddmm_list[row][nnz_col_id]) > 1e-3:
                 print(f'failed at: {row} {dense_col_id}')
                 return False
 
@@ -194,8 +195,8 @@ def test(m: int, k : int, n : int, mask : list[list[int]], GPU_ID : int, BLOCK_S
     torch_output = truth(left, right, GPU_ID)
 
     ## Call the rsddmm launcher.
-    rsddmm_output, sTod_linear_transformations, sTod_translations = rsddmm_launcher(left, right, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X)
-    assert is_correct(torch_output, rsddmm_output, sTod_linear_transformations, sTod_translations, mask), "Input is not within the threshold of correctness!"
+    rsddmm_output, sTod_linear_transformations, sTod_translations, nnzs = rsddmm_launcher(left, right, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X)
+    assert is_correct(torch_output, rsddmm_output, sTod_linear_transformations, sTod_translations, nnzs, mask), "Input is not within the threshold of correctness!"
 
 if __name__ == "__main__":
     ## Just a sample unit test over here.
