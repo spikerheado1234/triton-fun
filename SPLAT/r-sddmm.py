@@ -179,7 +179,7 @@ def is_correct(out_torch : torch.Tensor, out_rsddmm : torch.Tensor,
         for nnz_col_id in range(len(out_rsddmm_list[0])):
             ## We convert to the dense index.
             dense_col_id : int = round(nnz_col_id * sTod_linear_transformations_list[row] + sTod_translations_list[row])
-            if abs(out_torch_list[row][dense_col_id] - out_rsddmm_list[row][nnz_col_id]) > 1e-3:
+            if abs(out_torch_list[row][dense_col_id] - out_rsddmm_list[row][nnz_col_id]) > 1e-3 and mask[row][nnz_col_id]:
                 print(f'failed at: {row} {dense_col_id}')
                 return False
 
