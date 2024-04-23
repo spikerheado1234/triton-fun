@@ -60,6 +60,7 @@ def benchmark(pattern : str, sequence_length : int,
     
     sparsity_parameter : int = 2
     while sparsity_parameter < sequence_length:
+        print(f'sparsity parameter: {sparsity_parameter}')
         left : torch.Tensor = torch.randn((sequence_length, sequence_length)).to(GPU_ID)
         right : torch.Tensor = torch.randn((sequence_length, sequence_length)).to(GPU_ID)
         ## We benchmark both the triton and SPLAT's kernels.
