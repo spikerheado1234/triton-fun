@@ -6,6 +6,8 @@ import triton.ops
 import triton.language as tl
 import torch
 import time
+from acsr_helpers import create_blocked_mask
+from r_sddmm import rsddmm_launcher
 
 ## These are helper methods to create layouts for 
 ##   Triton block-sparse kernels which operate at 
@@ -52,7 +54,9 @@ def triton_block_sparse_sddmm(left : torch.Tensor, right : torch.Tensor, block :
 
 ## This runs a benchmark at a sequence length, varying the sparsity parameter
 ##  in powers of two within this range.
-def benchmark(pattern : str, sequence_length : int, triton_block_size : int, GPU_ID : int):
+def benchmark(pattern : str, sequence_length : int, 
+              triton_block_size : int, BLOCK_SIZE_Y : int, 
+              BLOCK_SIZE_X : int, GPU_ID : int):
     
     sparsity_parameter : int = 2
     while sparsity_parameter < sequence_length:
@@ -60,10 +64,15 @@ def benchmark(pattern : str, sequence_length : int, triton_block_size : int, GPU
         right : torch.Tensor = torch.randn((sequence_length, sequence_length)).to(GPU_ID)
         ## We benchmark both the triton and SPLAT's kernels.
         if pattern == "Blocked":
+            ## Create the two layouts: one for triton and one for SPLAT.
             triton_layout = create_triton_blocksparse_blocked_layout(sequence_length, 
                                                                     sparsity_parameter, 
                                                                     triton_block_size, GPU_ID)
+            splat_mask = create_blocked_mask(sequence_length, sparsity_parameter)
+
+            ## Call the two sddmm kernels.
             triton_block_sparse_sddmm(left[None, None, :, :], right[None, None, :, :], triton_block_size, triton_layout)
+            rsddmm_launcher(left, right, splat_mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X)
         else:
             raise Exception("Not implemented!")
 
