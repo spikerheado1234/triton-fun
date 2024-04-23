@@ -183,7 +183,7 @@ def rsddmm_launcher(x : torch.Tensor,
                             BLOCK_SIZE_Y=BLOCK_SIZE_Y, BLOCK_SIZE_X=BLOCK_SIZE_X, num_warps=2)
     torch.cuda.synchronize()
     rsddmm_end = time.time()
-    print(f'time taken splat: {rsddmm_start - rsddmm_end}')
+    print(f'time taken splat: {(rsddmm_end - rsddmm_start):.15f}')
 
     ## We return the sTod arrays for correctness checking only.
     return (output, sTod_linear_transformations, sTod_translations, nnzs)

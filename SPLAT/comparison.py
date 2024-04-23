@@ -48,7 +48,7 @@ def triton_block_sparse_sddmm(left : torch.Tensor, right : torch.Tensor, block :
     torch.cuda.synchronize()
     triton_blocksparse_end = time.time()
 
-    print(f'time taken triton: {triton_blocksparse_end-triton_blocksparse_start}')
+    print(f'time taken triton: {(triton_blocksparse_end-triton_blocksparse_start):.15f}')
 
     return sparse_dot_sdd_nt(left, right)
 
@@ -78,4 +78,4 @@ def benchmark(pattern : str, sequence_length : int,
 
         sparsity_parameter *= 2
 
-benchmark("Blocked", 1024, 128, 0)
+benchmark("Blocked", 1024, 128, 16, 16, 0)
