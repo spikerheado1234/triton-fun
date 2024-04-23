@@ -10,7 +10,7 @@ import torch
 import pdb
 
 ## This is a matrix multiplication of: m*k by k*n -> m*n matrix. NOTE, this is a general mat-mul kernel. 
-@triton.jit(interpret=True)
+@triton.jit
 def rsddmm_kernel(x_ptr, y_ptr, 
                     out_ptr, dTos_linear_trf, dTos_translations, 
                     sTod_linear_trf, sTod_translations, nnzs,
@@ -20,8 +20,10 @@ def rsddmm_kernel(x_ptr, y_ptr,
     bx = tl.program_id(axis=0)
 
     ## We first unpack the tb_maps to uncover the top left x and y coordinate.
-    bx_start : tl.int32 = tl.load(tb_mapping_x+bx)
-    by_start : tl.int32 = tl.load(tb_mapping_y+bx)
+    bx_start = tl.load(tb_mapping_x+bx, mask=True)
+    by_start = tl.load(tb_mapping_y+bx, mask=True)
+    bx_start = bx_start.to(tl.int32)
+    by_start = by_start.to(tl.int32)
 
     inner_tile_dim : tl.constexpr = 128
 
@@ -73,12 +75,18 @@ def rsddmm_kernel(x_ptr, y_ptr,
 
     ## Step 2
     col_idx /= linear_transforms[:,None] 
-    col_idx -= translations[:,None].to(torch.int64)
+    ## Intresting bug. Setting interpreter=True, 
+    ##   tl.int64 throws an error whilst torch.int64 does not. Turning off interpreter mode, the reverse is true.
+    #col_idx -= translations[:,None].to(torch.int64)
+    col_idx -= translations[:,None].to(tl.int64)
 
     ## Step 3 
     output_ptrs = col_idx + tl.arange(0, BLOCK_SIZE_Y)[:,None]*trailing_dim + by_start*trailing_dim
     ## Type casting required for tl.store compatibililty.
-    output_ptrs = output_ptrs.to(torch.int64)
+    ## Intresting bug. Setting interpreter=True, 
+    ##   tl.int64 throws an error whilst torch.int64 does not. Turning off interpreter mode, the reverse is true.
+    #output_ptrs = output_ptrs.to(torch.int64)
+    output_ptrs = output_ptrs.to(tl.int64)
 
     ## Step 4. 
     ## First, we check for OOB conditions due to translations.
@@ -87,8 +95,12 @@ def rsddmm_kernel(x_ptr, y_ptr,
 
     ## Unfortunately, broadcast semantics don't apply to the "==" operator.
     ##    So we have to do design a new bolean operator: ~op1 && ~op2
-    op_one = (col_idx % linear_transforms[:, None]).to(torch.int64) > 0
-    op_two = (col_idx % linear_transforms[:,None]).to(torch.int64) < 0
+    ## Intresting bug. Setting interpreter=True, 
+    ##   tl.int64 throws an error whilst torch.int64 does not. Turning off interpreter mode, the reverse is true.
+    #op_one = (col_idx % linear_transforms[:, None]).to(torch.int64) > 0
+    #op_two = (col_idx % linear_transforms[:,None]).to(torch.int64) < 0
+    op_one = (col_idx % linear_transforms[:, None]).to(tl.int64) > 0
+    op_two = (col_idx % linear_transforms[:,None]).to(tl.int64) < 0
     output_mask = output_mask & ((not op_one) & (not op_two))
     ## Lastly, we check for OOB due to exceeding nnz count.
     output_mask = output_mask & (col_idx < nnz[:,None])
