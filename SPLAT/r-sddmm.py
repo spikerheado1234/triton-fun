@@ -75,7 +75,8 @@ def rsddmm_kernel(x_ptr, y_ptr,
     col_idx /= linear_transforms[:,None] 
     col_idx -= translations[:,None].to(torch.int64)
 
-    ## Step 3
+    ## Step 3 
+    ## This is the problematic and buggy step.
     output_ptrs = col_idx + tl.arange(0, BLOCK_SIZE_Y)[:,None]*n + by_start*n
     ## Type casting required for tl.store compatibililty.
     output_ptrs = output_ptrs.to(torch.int64)
@@ -193,9 +194,11 @@ def test(m: int, k : int, n : int, mask : list[list[int]], GPU_ID : int, BLOCK_S
     right : torch.Tensor = torch.randn((k,n)).to(GPU_ID)
     ## Compare against pytorch's einsum as ground truth.
     torch_output = truth(left, right, GPU_ID)
+    torch.cuda.synchronize()
 
     ## Call the rsddmm launcher.
     rsddmm_output, sTod_linear_transformations, sTod_translations = rsddmm_launcher(left, right, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X)
+    torch.cuda.synchronize()
     assert is_correct(torch_output, rsddmm_output, sTod_linear_transformations, sTod_translations, mask), "Input is not within the threshold of correctness!"
 
 if __name__ == "__main__":
