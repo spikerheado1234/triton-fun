@@ -44,9 +44,6 @@ def rsddmm_kernel(x_ptr, y_ptr,
         x_tile = tl.load(x_ptr + x_ptrs, mask=mask_x_ptrs, other=0.0)
         y_tile = tl.load(y_ptr + y_ptrs, mask=mask_y_ptrs, other=0.0)
 
-        ## Debug purposes only, remove when finished debugging.
-        tl.store(debug_tensor_ptr + x_ptrs, x_tile, mask=mask_x_ptrs)
-
         accumulator += tl.dot(x_tile, y_tile)
 
         ## Increment x and y pointers here now.
@@ -159,7 +156,7 @@ def rsddmm_launcher(x : torch.Tensor,
 
     output : torch.Tensor = torch.empty((len(mask), trailing_dim)).to(GPU_ID)
 
-    debug_tensor : torch.Tensor = torch.empty((BLOCK_SIZE_Y, BLOCK_SIZE_X)).to(GPU_ID)
+    debug_tensor : torch.Tensor = torch.empty((len(mask), x.shape[1])).to(GPU_ID)
 
     ## Next, we compute the tiling blocks.
     tb_map_x, tb_map_y = gen_block_mappings(mask, BLOCK_SIZE_Y, BLOCK_SIZE_X, GPU_ID)
@@ -181,8 +178,8 @@ def rsddmm_launcher(x : torch.Tensor,
                             BLOCK_SIZE_Y=BLOCK_SIZE_Y, BLOCK_SIZE_X=BLOCK_SIZE_X, num_warps=2)
     torch.cuda.synchronize()
     rsddmm_end = time.time()
-    print(f'printing left tensor')
-    print(x)
+    print(f'printing right tensor')
+    print(y)
     print(f'printing triton persisted loaded tile')
     print(debug_tensor)
     print(f'time taken splat: {(rsddmm_end - rsddmm_start):.15f}')
