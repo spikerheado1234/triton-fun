@@ -156,7 +156,7 @@ def rsddmm_launcher(x : torch.Tensor,
 
     output : torch.Tensor = torch.empty((len(mask), trailing_dim)).to(GPU_ID)
 
-    debug_tensor : torch.Tensor = torch.empty((len(mask), x.shape[1])).to(GPU_ID)
+    debug_tensor : torch.Tensor = torch.empty((len(mask), trailing_dim)).to(GPU_ID)
 
     ## Next, we compute the tiling blocks.
     tb_map_x, tb_map_y = gen_block_mappings(mask, BLOCK_SIZE_Y, BLOCK_SIZE_X, GPU_ID)
