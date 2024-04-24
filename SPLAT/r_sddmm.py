@@ -50,7 +50,7 @@ def rsddmm_kernel(x_ptr, y_ptr,
         x_ptrs += inner_tile_dim
         y_ptrs += inner_tile_dim*n
 
-    accumulator = accumulator.to(output_ptrs.dtype.element_ty)
+    accumulator = accumulator.to(out_ptr.dtype.element_ty)
 
     ## This uses the sTOd affine-indices for scaling the indices of where to store.
     linear_transforms = tl.load(sTod_linear_trf+by_start+tl.arange(0,BLOCK_SIZE_Y), 
@@ -156,7 +156,7 @@ def rsddmm_launcher(x : torch.Tensor,
     ## compute the trailing dimension length of the ACSR.
     trailing_dim : int = max(list(map(lambda x: reduce(lambda a,b: a+b, x, 0), mask)))
 
-    output : torch.Tensor = torch.empty((len(mask), trailing_dim), dtype=torch.float16).to(GPU_ID)
+    output : torch.Tensor = torch.empty((len(mask), trailing_dim), dtype=torch.float32).to(GPU_ID)
 
     debug_tensor : torch.Tensor = torch.empty((len(mask), trailing_dim)).to(GPU_ID)
 
@@ -212,13 +212,17 @@ def is_correct(out_torch : torch.Tensor, out_rsddmm : torch.Tensor,
 def test(m: int, k : int, n : int, mask : list[list[int]], GPU_ID : int, BLOCK_SIZE_Y : int, BLOCK_SIZE_X : int):
     ## Some simple test-cases for me to try out.
     assert m==n, "We only need to consider the case when m=n."
-    left : torch.Tensor = torch.randn((m,k),dtype=torch.float16).to(GPU_ID)
-    right : torch.Tensor = torch.randn((k,n)).to(GPU_ID)
+    left : torch.Tensor = torch.randn((m,k),dtype=torch.float32).to(GPU_ID)
+    right : torch.Tensor = torch.randn((k,n),dtype=torch.float32).to(GPU_ID)
     ## Compare against pytorch's einsum as ground truth.
     torch_output = truth(left, right, GPU_ID)
 
     ## Call the rsddmm launcher.
     rsddmm_output, sTod_linear_transformations, sTod_translations, nnzs = rsddmm_launcher(left, right, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X)
+    print('printing torch output')
+    print(torch_output)
+    print('printing rsddmm output')
+    print(rsddmm_output)
     assert is_correct(torch_output, rsddmm_output, sTod_linear_transformations, sTod_translations, nnzs, mask), "Input is not within the threshold of correctness!"
 
 if __name__ == "__main__":
