@@ -166,14 +166,6 @@ def rsddmm_launcher(x : torch.Tensor,
     ## Finally, we can launch the kernel
     grid_dim = (tb_map_x.shape[0],)
 
-    for _ in range(5):
-        rsddmm_kernel[grid_dim](x,y,output, 
-                                dTos_linear_transformations,dTos_translations, 
-                                sTod_linear_transformations,sTod_translations,nnzs,
-                                x.shape[0],y.shape[1],x.shape[1], trailing_dim, tb_map_x, tb_map_y,
-                                BLOCK_SIZE_Y=BLOCK_SIZE_Y, BLOCK_SIZE_X=BLOCK_SIZE_X, num_warps=2)
-    
-
     torch.cuda.synchronize()
     rsddmm_start = time.time()
     rsddmm_kernel[grid_dim](x,y,output, 

@@ -37,9 +37,6 @@ def create_triton_blocksparse_blocked_layout(s : int, p : int, block : int, GPU_
 def triton_block_sparse_sddmm(left : torch.Tensor, right : torch.Tensor, block : int, layout : list[list[int]]) -> torch.Tensor:
 
     assert left.device == right.device, "Issue with where the tensors are stored"
-    for _ in range(5):
-        sparse_dot_sdd_nt = triton.ops.blocksparse.matmul(layout, block, "sdd", trans_a=False, trans_b=True,
-                                                      device=left.device)
 
     torch.cuda.synchronize()
     triton_blocksparse_start = time.time()
@@ -79,4 +76,10 @@ def benchmark(pattern : str, sequence_length : int,
 
         sparsity_parameter *= 2
 
-benchmark("Blocked", 1024, 128, 16, 16, 0)
+sequence_length : int = 1024
+triton_block_size : int = 16
+BLOCK_SIZE_X : int = 16
+BLOCK_SIZE_Y : int = 16
+GPU_ID : int = 0
+
+benchmark("Blocked", sequence_length, triton_block_size, BLOCK_SIZE_Y, BLOCK_SIZE_X, GPU_ID)
