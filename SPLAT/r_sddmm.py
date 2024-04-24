@@ -178,17 +178,13 @@ def rsddmm_launcher(x : torch.Tensor,
                             BLOCK_SIZE_Y=BLOCK_SIZE_Y, BLOCK_SIZE_X=BLOCK_SIZE_X, num_warps=2)
     torch.cuda.synchronize()
     rsddmm_end = time.time()
-    print(f'printing right tensor')
-    print(y)
-    print(f'printing triton persisted loaded tile')
-    print(debug_tensor)
     print(f'time taken splat: {(rsddmm_end - rsddmm_start):.15f}')
 
     ## We return the sTod arrays for correctness checking only.
     return (output, sTod_linear_transformations, sTod_translations, nnzs)
 
 def truth(x : torch.Tensor, y: torch.Tensor, GPU_ID : int) -> torch.Tensor:
-    return torch.einsum('ab,bc -> ac',x,y).to(GPU_ID)
+    return torch.matmul(x,y).to(GPU_ID)
 
 ## Define checker later, figure out good practice. TODO.
 def is_correct(out_torch : torch.Tensor, out_rsddmm : torch.Tensor, 
