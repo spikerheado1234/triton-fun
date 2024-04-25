@@ -10,7 +10,6 @@ def vector_add_kernel(x_ptr,
                       n_elements,
                       BLOCK_SIZE : tl.constexpr,
                       ):
-
     ## Get blockIdx.
     blockIdx = tl.program_id(axis=0)
 

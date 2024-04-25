@@ -112,7 +112,7 @@ def rsddmm_kernel(x_ptr, y_ptr,
 
 ## This is a matrix multiplication of: m*k by k*n -> m*n matrix. NOTE, this is a general mat-mul kernel. 
 ## This is a debug build. To show correctness.
-@triton.jit(interpret=True)
+@triton.jit
 def rsddmm_kernel_debug(x_ptr, y_ptr, 
                         out_ptr, dTos_linear_trf, dTos_translations, 
                         sTod_linear_trf, sTod_translations, nnzs,
@@ -267,16 +267,16 @@ def rsddmm_launcher(x : torch.Tensor,
 
     torch.cuda.synchronize()
     rsddmm_start = time.time()
-    #rsddmm_kernel[grid_dim](x,y,output, 
-    #                        dTos_linear_transformations,dTos_translations, 
-    #                        sTod_linear_transformations,sTod_translations,nnzs,
-    #                        x.shape[0],y.shape[1],x.shape[1], trailing_dim, tb_map_x, tb_map_y,
-    #                        BLOCK_SIZE_Y=BLOCK_SIZE_Y, BLOCK_SIZE_X=BLOCK_SIZE_X, num_warps=2)
-    rsddmm_kernel_debug[grid_dim](x,y,output, 
-                                  dTos_linear_transformations,dTos_translations, 
-                                  sTod_linear_transformations,sTod_translations,nnzs,
-                                  x.shape[0],y.shape[1],x.shape[1], trailing_dim, tb_map_x, tb_map_y,
-                                  BLOCK_SIZE_Y=BLOCK_SIZE_Y, BLOCK_SIZE_X=BLOCK_SIZE_X, num_warps=2)
+    rsddmm_kernel[grid_dim](x,y,output, 
+                            dTos_linear_transformations,dTos_translations, 
+                            sTod_linear_transformations,sTod_translations,nnzs,
+                            x.shape[0],y.shape[1],x.shape[1], trailing_dim, tb_map_x, tb_map_y,
+                            BLOCK_SIZE_Y=BLOCK_SIZE_Y, BLOCK_SIZE_X=BLOCK_SIZE_X, num_warps=2)
+    #rsddmm_kernel_debug[grid_dim](x,y,output, 
+    #                              dTos_linear_transformations,dTos_translations, 
+    #                              sTod_linear_transformations,sTod_translations,nnzs,
+    #                              x.shape[0],y.shape[1],x.shape[1], trailing_dim, tb_map_x, tb_map_y,
+    #                              BLOCK_SIZE_Y=BLOCK_SIZE_Y, BLOCK_SIZE_X=BLOCK_SIZE_X, num_warps=2)
     torch.cuda.synchronize()
     rsddmm_end = time.time()
     print(f'time taken splat: {(rsddmm_end - rsddmm_start):.15f}')
@@ -322,8 +322,8 @@ def test(m: int, k : int, n : int, mask : list[list[int]], GPU_ID : int, BLOCK_S
     assert m==n, "We only need to consider the case when m=n."
     #left : torch.Tensor = torch.randn((m,k),dtype=torch.float32).to(GPU_ID)
     #right : torch.Tensor = torch.randn((k,n),dtype=torch.float32).to(GPU_ID)
-    left : torch.Tensor = torch.ones((m,k),dtype=torch.float32).to(GPU_ID)
-    right : torch.Tensor = torch.ones((k,n),dtype=torch.float32).to(GPU_ID)
+    left : torch.Tensor = torch.randint(0, 100, (m,k),dtype=torch.float32).to(GPU_ID)
+    right : torch.Tensor = torch.randint(0, 100, (k,n),dtype=torch.float32).to(GPU_ID)
     ## Compare against pytorch's einsum as ground truth.
     torch_output = truth(left, right, GPU_ID)
 
