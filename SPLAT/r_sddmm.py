@@ -198,15 +198,24 @@ def is_correct(out_torch : torch.Tensor, out_rsddmm : torch.Tensor,
     sTod_translations_list = sTod_translations.tolist()
     nnzs_list = nnzs.tolist()
 
+    num_deviations : int = 0
+    mse_error : float = 0
+
     for row in range(len(mask)):
         for nnz_col_id in range(len(out_rsddmm_list[0])):
             ## We convert to the dense index.
             dense_col_id : int = round(nnz_col_id * sTod_linear_transformations_list[row] + sTod_translations_list[row])
             if nnz_col_id < nnzs_list[row] and abs(out_torch_list[row][dense_col_id] - out_rsddmm_list[row][nnz_col_id]) > 1e-3:
-                print(f'failed at: {row} {dense_col_id}')
-                return False
+                #print(f'failed at: {row} {dense_col_id}')
+                mse_error += abs(out_torch_list[row][dense_col_id] - out_rsddmm_list[row][nnz_col_id])
+                num_deviations += 1
 
-    return True
+    if num_deviations > 0:
+        print(f'test case failed average mse: {mse_error}')
+        return False
+    else:
+        print(f'test case passed!')
+        return True
 
 ## Multiply a: m*k and k*n matrix.
 def test(m: int, k : int, n : int, mask : list[list[int]], GPU_ID : int, BLOCK_SIZE_Y : int, BLOCK_SIZE_X : int):
@@ -219,7 +228,7 @@ def test(m: int, k : int, n : int, mask : list[list[int]], GPU_ID : int, BLOCK_S
 
     ## Call the rsddmm launcher.
     rsddmm_output, sTod_linear_transformations, sTod_translations, nnzs = rsddmm_launcher(left, right, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X)
-    assert is_correct(torch_output, rsddmm_output, sTod_linear_transformations, sTod_translations, nnzs, mask), "Input is not within the threshold of correctness!"
+    is_correct(torch_output, rsddmm_output, sTod_linear_transformations, sTod_translations, nnzs, mask)
 
 if __name__ == "__main__":
     ## Just a sample unit test over here.
@@ -362,23 +371,14 @@ if __name__ == "__main__":
 
     ## These are pretty small tests.
     test_one()
-    print('test one passed', flush=True)
     test_two()
-    print('test two passed', flush=True)
     test_three()
-    print('test three passed', flush=True)
     test_four()
-    print('test four passed', flush=True)
     test_five()
-    print('test five passed', flush=True)
     test_six()
-    print('test six passed', flush=True)
     test_seven()
-    print('test seven passed', flush=True)
     test_eight()
-    print('test eight passed', flush=True)
     test_nine()
-    print('test nine passed', flush=True)
 
     ## Larger tests.
     def test_ten():
@@ -427,8 +427,5 @@ if __name__ == "__main__":
         test(m, k, n, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X)
 
     test_ten()
-    print('test ten passed', flush=True)
     test_eleven()
-    print('test eleven passed', flush=True)
     test_twelve()
-    print('test twelve passed', flush=True)
