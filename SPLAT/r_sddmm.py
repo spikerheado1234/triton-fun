@@ -221,8 +221,10 @@ def is_correct(out_torch : torch.Tensor, out_rsddmm : torch.Tensor,
 def test(m: int, k : int, n : int, mask : list[list[int]], GPU_ID : int, BLOCK_SIZE_Y : int, BLOCK_SIZE_X : int):
     ## Some simple test-cases for me to try out.
     assert m==n, "We only need to consider the case when m=n."
-    left : torch.Tensor = torch.randn((m,k),dtype=torch.float32).to(GPU_ID)
-    right : torch.Tensor = torch.randn((k,n)).to(GPU_ID)
+    #left : torch.Tensor = torch.randn((m,k),dtype=torch.float32).to(GPU_ID)
+    #right : torch.Tensor = torch.randn((k,n),dtype=torch.float32).to(GPU_ID)
+    left : torch.Tensor = torch.ones((m,k),dtype=torch.float32).to(GPU_ID)
+    right : torch.Tensor = torch.ones((k,n),dtype=torch.float32).to(GPU_ID)
     ## Compare against pytorch's einsum as ground truth.
     torch_output = truth(left, right, GPU_ID)
 
