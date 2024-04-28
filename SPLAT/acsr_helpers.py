@@ -32,6 +32,16 @@ def create_blocked_mask(s : int, p  : int):
 
     return mask
 
+def create_windowed_mask(s : int, p : int) -> list[list[int]]:
+    mask = [[0 for _ in range(s)] for _ in range(s)]
+
+    for i in range(s):
+        for j in range(s):
+            if i-p <= j and j <= i+p:
+                mask[i][j] = 1
+
+    return mask
+
 ## This gives the mapping from dense -> sparse.
 @dataclass
 class AffineIndices:

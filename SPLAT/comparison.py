@@ -6,14 +6,16 @@ import triton.ops
 import triton.language as tl
 import torch
 import time
-from acsr_helpers import create_blocked_mask
+from acsr_helpers import create_blocked_mask, create_windowed_mask
 from r_sddmm import rsddmm_launcher
 
 ## These are helper methods to create layouts for 
 ##   Triton block-sparse kernels which operate at 
 ##   a different granularity compared to SPLAT's masks.
 
-def create_triton_blocksparse_blocked_layout(s : int, p : int, block : int, GPU_ID : int) -> torch.Tensor:
+def create_triton_blocksparse_blocked_layout(s : int, 
+                                             p : int, block : int, 
+                                             GPU_ID : int) -> torch.Tensor:
     num_blocks = triton.cdiv(s, block)
 
     layout = [[0 for _ in range(num_blocks)] for _ in range(num_blocks)]
@@ -31,6 +33,20 @@ def create_triton_blocksparse_blocked_layout(s : int, p : int, block : int, GPU_
                 end_col = start_col + 2*p
                 if start_col <= j and  j < end_col:
                     layout[i//block][j//block] = 1
+    return (torch.tensor(layout, dtype=torch.long)[None,:,:]).to(GPU_ID)
+
+def create_triton_blocksparse_windowed_layout(s : int, p : int, 
+                                              block : int, 
+                                              GPU_ID : int) -> torch.Tensor:
+    num_blocks = triton.cdiv(s, block)
+
+    layout = [[0 for _ in range(num_blocks)] for _ in range(num_blocks)]
+
+    for i in range(s):
+        for j in range(s):
+            if i-p <= j and j <= i+p:
+                layout[i//block][j//block] = 1
+
     return (torch.tensor(layout, dtype=torch.long)[None,:,:]).to(GPU_ID)
 
 def triton_block_sparse_sddmm(left : torch.Tensor, right : torch.Tensor, block : int, layout : list[list[int]]) -> torch.Tensor:
@@ -73,6 +89,17 @@ def benchmark(pattern : str, sequence_length : int,
             ## Call the two sddmm kernels.
             triton_block_sparse_sddmm(left[None, None, :, :], right[None, None, :, :], triton_block_size, triton_layout)
             rsddmm_launcher(left, right, splat_mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X)
+        elif pattern == "Windowed":
+            ## Create the two layouts: one for triton and one for SPLAT.
+            triton_layout = create_triton_blocksparse_windowed_layout(sequence_length, 
+                                                                    sparsity_parameter, 
+                                                                    triton_block_size, GPU_ID)
+            splat_mask = create_windowed_mask(sequence_length, sparsity_parameter)
+
+            ## Call the two sddmm kernels.
+            triton_block_sparse_sddmm(left[None, None, :, :], right[None, None, :, :], triton_block_size, triton_layout)
+            rsddmm_launcher(left, right, splat_mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X)
+
         else:
             raise Exception("Not implemented!")
 
