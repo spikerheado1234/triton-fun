@@ -31,17 +31,19 @@ def create_triton_blocksparse_blocked_layout(s : int, p : int, block : int, GPU_
                 end_col = start_col + 2*p
                 if start_col <= j and  j < end_col:
                     layout[i//block][j//block] = 1
-
     return (torch.tensor(layout, dtype=torch.long)[None,:,:]).to(GPU_ID)
 
 def triton_block_sparse_sddmm(left : torch.Tensor, right : torch.Tensor, block : int, layout : list[list[int]]) -> torch.Tensor:
 
     assert left.device == right.device, "Issue with where the tensors are stored"
+    sparse_dot_sdd_nt = triton.ops.blocksparse.matmul(layout, block, "sdd", trans_a=False, trans_b=True, device=left.device)
+
+    for _ in range(5):
+        sparse_dot_sdd_nt(left, right)
 
     torch.cuda.synchronize()
     triton_blocksparse_start = time.time()
-    sparse_dot_sdd_nt = triton.ops.blocksparse.matmul(layout, block, "sdd", trans_a=False, trans_b=True,
-                                                      device=left.device)
+    sparse_dot_sdd_nt(left, right)
     torch.cuda.synchronize()
     triton_blocksparse_end = time.time()
 
@@ -58,8 +60,8 @@ def benchmark(pattern : str, sequence_length : int,
     sparsity_parameter : int = 2
     while sparsity_parameter <= sequence_length:
         print(f'sparsity parameter: {sparsity_parameter}')
-        left : torch.Tensor = torch.randn((sequence_length, sequence_length)).to(GPU_ID)
-        right : torch.Tensor = torch.randn((sequence_length, sequence_length)).to(GPU_ID)
+        left : torch.Tensor = torch.randint(0,100,(sequence_length, sequence_length), dtype=torch.float32).to(GPU_ID)
+        right : torch.Tensor = torch.randint(0,100,(sequence_length, sequence_length),dtype=torch.float32).to(GPU_ID)
         ## We benchmark both the triton and SPLAT's kernels.
         if pattern == "Blocked":
             ## Create the two layouts: one for triton and one for SPLAT.
@@ -77,7 +79,7 @@ def benchmark(pattern : str, sequence_length : int,
         sparsity_parameter *= 2
 
 sequence_length : int = 1024
-triton_block_size : int = 16
+triton_block_size : int = 128
 BLOCK_SIZE_X : int = 16
 BLOCK_SIZE_Y : int = 16
 GPU_ID : int = 0
