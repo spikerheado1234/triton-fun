@@ -111,4 +111,4 @@ BLOCK_SIZE_X : int = 16
 BLOCK_SIZE_Y : int = 16
 GPU_ID : int = 0
 
-benchmark("Blocked", sequence_length, triton_block_size, BLOCK_SIZE_Y, BLOCK_SIZE_X, GPU_ID)
+benchmark("Windowed", sequence_length, triton_block_size, BLOCK_SIZE_Y, BLOCK_SIZE_X, GPU_ID)
