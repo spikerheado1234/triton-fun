@@ -134,8 +134,3 @@ if __name__ == "__main__":
     print(f'sTod a: {c}')
     print(f'sTod b: {d}')
     print(f'nnzs: {e}')
-
-
-
-
-
