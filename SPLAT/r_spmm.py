@@ -2,8 +2,10 @@ import torch
 import triton
 import triton.language as tl
 from functools import reduce
+from typing import Any
 import time
 from acsr_helpers import create_acsr, create_blocked_mask, create_windowed_mask
+import pdb
 
 ## This is a naive spmm kernel with the incoming ACSR (x_ptr) in row-major and row-compressed.
 ## This represents an: (mxk) x (kxn) matrix multiplication.
@@ -14,13 +16,14 @@ def rspmm_kernel_row_maj_row_comp(
     out_ptr, dTos_linear_trf, dTos_translations, 
     sTod_linear_trf, sTod_translations, nnzs,
     m, n, k, trailing_dim, 
+    ## ACSR metadata for optimisations.
+    span_loop_start, span_loop_end,
     BLOCK_SIZE_Y : tl.constexpr, BLOCK_SIZE_X : tl.constexpr
     ):
     ## We will first do this naively.
-    
     ## Extract the blockIdx.x/y indices.
-    by = tl.pid(axis=1)
-    bx = tl.pid(axis=0)
+    by = tl.program_id(axis=1)
+    bx = tl.program_id(axis=0)
 
     ## The anchor point, top-left corner of the TB.
     by_start = by*BLOCK_SIZE_Y
@@ -28,10 +31,9 @@ def rspmm_kernel_row_maj_row_comp(
 
     ## Next we prepare the x and y pointers.
     inner_tile : tl.constexpr = 128
-
     ## We use dense_col_idxs and internally convert them to sparse coordinates within the inner loop of this kernel.
-    dense_col_idxs = tl.arange(0, inner_tile)[None, :].to(tl.int64) + tl.zeros(0, BLOCK_SIZE_Y)[:, None].to(tl.int64)
-    y_ptrs = bx_start*BLOCK_SIZE_X + tl.arange(0, BLOCK_SIZE_X)[None, :] + tl.arange(0, inner_tile)[:, None] 
+    dense_col_idxs = tl.arange(0, inner_tile)[None, :].to(tl.int64) + tl.zeros((BLOCK_SIZE_Y,), dtype=tl.int64)[:, None] 
+    y_ptrs = bx_start + tl.arange(0, BLOCK_SIZE_X)[None, :] + tl.arange(0, inner_tile)[:, None]*n
 
     ## We load the ACSR metadata, as this will be used to check properties within the inner sparse loop.
     block_translations = tl.load(
@@ -49,40 +51,61 @@ def rspmm_kernel_row_maj_row_comp(
         ## Mask
         tl.arange(0, BLOCK_SIZE_Y)[None, :] + by_start < m,
         ## Default value.
+        other=1
+    ).reshape(BLOCK_SIZE_Y, 1)
+
+    block_nnzs = tl.load(
+        ## Ptrs
+        nnzs + tl.arange(0, BLOCK_SIZE_Y)[None, :] + by_start,
+        ## Mask
+        tl.arange(0, BLOCK_SIZE_Y)[None, :] + by_start < m,
+        ## Default value.
         other=0.0
     ).reshape(BLOCK_SIZE_Y, 1)
 
     accumulator = tl.zeros((BLOCK_SIZE_Y, BLOCK_SIZE_X), dtype=tl.float32)
 
-    for i in range(tl.cdiv(k, inner_tile)):
+    ## Load metadata for optimsations.
 
-        ## Constraint one, OOB along the leading and trailing dimensions.
-        mask_x_ptrs = i*inner_tile + tl.arange(0, inner_tile)[None,:] < k
-        mask_x_ptrs = mask_x_ptrs & (tl.arange(0, BLOCK_SIZE_Y)[:,None] + by_start < m)
+    ## Opt-1: span-specialisation.
+    loop_start : tl.constexpr = tl.load(span_loop_start + tl.program_id(axis=1), mask=True)
+    loop_end : tl.constexpr = tl.load(span_loop_end + tl.program_id(axis=1), mask=True)
+    ## Opt-2: transformation-alignment. (TODO(ahangupta): finish implementing at a later date.)
+
+    ## TODO(ahangupta): check the implications of using a div_rn in this loop.
+    for i in range(
+        tl.floor(tl.div_rn(loop_start, inner_tile)), 
+        tl.cdiv(loop_end.to(tl.int64), inner_tile)
+        ):
+    #for i in range(tl.cdiv(k, inner_tile)):
+
+        ## Constraint one, OOB along the leading dimensions.
+        sparse_x_col_idxs = (tl.div_rn(dense_col_idxs - block_translations, block_linear_trfs)).to(tl.int64)
+        mask_x_ptrs = tl.arange(0, BLOCK_SIZE_Y)[:,None] + by_start < m
+        mask_x_ptrs = mask_x_ptrs & (sparse_x_col_idxs < block_nnzs)
+        mask_x_ptrs = mask_x_ptrs & (sparse_x_col_idxs >= 0)
         ## Constraint two, mapped to valid indices in the ACSR.
 
         ## First check: linear_trf valid check.
+        '''
         op_one = dense_col_idxs % block_linear_trfs > 0
         op_two = dense_col_idxs % block_linear_trfs < 0
         mask_x_ptrs = mask_x_ptrs & ((not op_one) & (not op_two))
+        '''
+        mask_x_ptrs = mask_x_ptrs & (dense_col_idxs % block_linear_trfs == 0)
 
-        ## Second check: translation valid check.
-        mask_x_ptrs = mask_x_ptrs & (dense_col_idxs - block_translations > 0)
-
-        ## Finally, we can convert the x_ptrs to sparse points in the ACSR.  This is incorrect.
-        sparse_x_ptrs = (tl.div_rn(dense_col_idxs - block_translations), block_linear_trfs).to(tl.int64) + by_start*trailing_dim + i*inner_tile + tl.arange(0, BLOCK_SIZE_Y)*trailing_dim 
+        ## Finally, we can convert the x_ptrs to sparse points in the ACSR.
+        sparse_x_ptrs = sparse_x_col_idxs + by_start*trailing_dim + i*inner_tile + tl.arange(0, BLOCK_SIZE_Y)[:,None]*trailing_dim 
 
         ## The mask for the dense matrix. 
 
         ## First check, OOB from the horizontal (leading dimension).
-        mask_y_ptrs = bx_start * BLOCK_SIZE_X + tl.arange(0, BLOCK_SIZE_X)[None, :] < n
+        mask_y_ptrs = bx_start + tl.arange(0, BLOCK_SIZE_X)[None, :] < n
         ## Second check, OOB from the vertical (trailing dimension)
-        mask_y_ptrs  = mask_y_ptrs & (i*inner_tile + tl.arange(0, BLOCK_SIZE_Y)[:, None] < k)
-
+        mask_y_ptrs  = mask_y_ptrs & (i*inner_tile + tl.arange(0, inner_tile)[:, None] < k)
         ## We load the data.
         x_tile = tl.load(x_ptr + sparse_x_ptrs, mask=mask_x_ptrs, other=0.0)
-        y_tile = tl.load(y_ptr + y_ptrs, mask=mask_y_ptrs, other=0.0)
-
+        y_tile = tl.load(y_ptr + y_ptrs, mask=mask_y_ptrs, other=0.0) ## -> orientation of this isn't particularly good.
         ## Do the matmul and accumulate.
         accumulator += tl.dot(x_tile, y_tile)
 
@@ -92,11 +115,10 @@ def rspmm_kernel_row_maj_row_comp(
     ## Need to implement write-back logic.
 
     ## Now, write-backs are straightfoward since the output is dense.
-    write_ptrs = bx_start * BLOCK_SIZE_X + tl.arange(0, BLOCK_SIZE_X)[None, :] + (by_start*BLOCK_SIZE_Y + tl.arange(0, BLOCK_SIZE_Y)[:, None]*n)
+    write_ptrs = bx_start + tl.arange(0, BLOCK_SIZE_X)[None, :] + (by_start*n + tl.arange(0, BLOCK_SIZE_Y)[:, None]*n)
     ## Check whether leading dimension OOB.
-    write_ptrs_mask = bx_start * BLOCK_SIZE_X + tl.arange(0, BLOCK_SIZE_X)[None, :] < m
-    write_ptrs_mask = write_ptrs_mask & (by_start * BLOCK_SIZE_Y + tl.arange(0, BLOCK_SIZE_Y)[:, None] < n)
-
+    write_ptrs_mask = bx_start + tl.arange(0, BLOCK_SIZE_X)[None, :] < m
+    write_ptrs_mask = write_ptrs_mask & (by_start + tl.arange(0, BLOCK_SIZE_Y)[:, None] < n)
     tl.store(out_ptr + write_ptrs, accumulator, mask=write_ptrs_mask)
 
 ## Over here, x is an ACSR and y is the Values tensor.
@@ -110,21 +132,24 @@ def rspmm_launcher(x : torch.Tensor,
     output : torch.Tensor = torch.empty((x.shape[0], y.shape[-1]), dtype=torch.float32).to(GPU_ID)
 
     ## We instantiate the acsr metadata.
-    dTos_linear_transformations, dTos_translations, sTod_linear_transformations, sTod_translations, nnzs = create_acsr(
+    dTos_linear_transformations, dTos_translations, sTod_linear_transformations, \
+    sTod_translations, nnzs, span_loop_start, span_loop_end = create_acsr(
         mask, BLOCK_SIZE_Y, GPU_ID
         )
-
+    print(f'span spec loop data start: {span_loop_start}')
+    print(f'span spec loop data end: {span_loop_end}')
     ## Finally, we can launch the kernel
     grid_dim = (triton.cdiv(y.shape[1], BLOCK_SIZE_X),triton.cdiv(x.shape[0], BLOCK_SIZE_Y))
-
-    torch.cuda.synchronize()
+    #torch.cuda.synchronize()
     rsddmm_start = time.time()
     rspmm_kernel_row_maj_row_comp[grid_dim](x,y,output, 
                                             dTos_linear_transformations,dTos_translations, 
                                             sTod_linear_transformations,sTod_translations,nnzs,
-                                            x.shape[0],y.shape[1],x.shape[1], acsr_trailing_dim,
+                                            x.shape[0],y.shape[1],y.shape[0], acsr_trailing_dim,
+                                            ## ACSR metadata for optimisations.
+                                            span_loop_start, span_loop_end,
                                             BLOCK_SIZE_Y=BLOCK_SIZE_Y, BLOCK_SIZE_X=BLOCK_SIZE_X, num_warps=2)
-    torch.cuda.synchronize()
+    #torch.cuda.synchronize()
     rsddmm_end = time.time()
     print(f'time taken splat: {(rsddmm_end - rsddmm_start):.15f}')
     print(f'rspmm kernel output shape: {output.shape}')
@@ -137,6 +162,8 @@ def is_correct(
         sTod_translations : torch.Tensor, nnzs: torch.Tensor, mask : list[list[int]]
         ) -> bool:
 
+    left_tensor_list = left_tensor.tolist()
+    right_tensor_list = right_tensor.tolist()
     out_rspmm_list = out_rspmm.tolist()
     sTod_linear_transformations_list = sTod_linear_transofrmations.tolist()
     sTod_translations_list = sTod_translations.tolist()
@@ -145,24 +172,30 @@ def is_correct(
     num_deviations : int = 0
     mse_error : float = 0
 
-    def dot_product(left, right, row, col):
+    def dot_product(left, right, row, col, linear_trf, translation, nnzs):
         ## How pythonic can really be here?
         accum = 0
-        for i in range(len(left[0])):
-            for j in range(len(right)):
-                accum += left[row][i] * right[j][col]
+        for i in range(nnzs):
+            inner_idx = round(i*linear_trf + translation)  ## unsure if this is entirely correct, TODO(ahangupta): double-confirm this.
+            accum += left[row][i] * right[inner_idx][col]
 
         return accum
 
-    for row in range(len(mask)):
-        for nnz_col_id in range(len(out_rspmm_list[0])):
+    for dense_row in range(len(mask)):
+        for dense_col in range(len(right_tensor_list[0])):
             ## We convert to the dense index.
-            dense_col_id : int = round(nnz_col_id * sTod_linear_transformations_list[row] + sTod_translations_list[row])
-            if nnz_col_id < nnzs_list[row]:
+            sparse_col = round(dense_col / sTod_linear_transformations_list[dense_row] - sTod_translations_list[dense_row])
+            ## Legality check for the sparse_col coordinate.
+            if sparse_col < nnzs_list[dense_row] and sparse_col >= 0 and dense_col % round(sTod_linear_transformations_list[dense_row]) == 0:
                 ## Now, we manually compute ground truth.
-                manual_answer = dot_product(left_tensor, right_tensor, row, dense_col_id)
-                if abs(manual_answer - out_rspmm_list[row][dense_col_id]) > 1e-3:
-                    mse_error += abs(manual_answer - out_rspmm_list[row][dense_col_id])
+                manual_answer = dot_product(left_tensor_list, right_tensor_list, 
+                                            dense_row, dense_col, 
+                                            sTod_linear_transformations_list[dense_row],
+                                            sTod_translations_list[dense_row], 
+                                            round(nnzs_list[dense_row])
+                                            )
+                if abs(manual_answer - out_rspmm_list[dense_row][dense_col]) > 1e-3:
+                    mse_error += abs(manual_answer - out_rspmm_list[dense_row][dense_col])
                     num_deviations += 1
 
     if num_deviations > 0:
@@ -173,7 +206,7 @@ def is_correct(
         return True
 
 ## Multiply a: m*k and k*n matrix.
-def test(m: int, k : int, n : int, mask : list[list[int]], GPU_ID : int, BLOCK_SIZE_Y : int, BLOCK_SIZE_X : int):
+def test(m: int, k : int, n : int, mask : list[list[int]], GPU_ID : Any, BLOCK_SIZE_Y : int, BLOCK_SIZE_X : int):
     ## Some simple test-cases for me to try out.
     assert m==n, "We only need to consider the case when m=n."
     #left : torch.Tensor = torch.randn((m,k),dtype=torch.float32).to(GPU_ID)
@@ -189,11 +222,11 @@ def test(m: int, k : int, n : int, mask : list[list[int]], GPU_ID : int, BLOCK_S
 
     ## Call the rsddmm launcher.
     rspmm_output, sTod_linear_transformations, sTod_translations, nnzs = rspmm_launcher(
-        left, right, mask, GPU_ID, 
+        left, right, trailing_dim_acsr, mask, GPU_ID, 
         BLOCK_SIZE_Y, BLOCK_SIZE_X
         )
-
     is_correct(
+        left, right,
         rspmm_output, 
         sTod_linear_transformations, 
         sTod_translations, nnzs, mask
@@ -201,7 +234,6 @@ def test(m: int, k : int, n : int, mask : list[list[int]], GPU_ID : int, BLOCK_S
 
 if __name__ == "__main__":
     ## Just a sample unit test over here.
-
     ## Small unit-tests
     def test_one():
         ## Basice parameters to multiply: m*k by k*n -> m*n matrix.
@@ -209,7 +241,7 @@ if __name__ == "__main__":
         m: int = 10
         k: int = 10
         p: int = 2 ## Sparsity parameter.
-        GPU_ID : int = 0
+        GPU_ID : Any = 'cpu'
         BLOCK_SIZE_Y : int = 16
         BLOCK_SIZE_X : int = 16
 
@@ -218,8 +250,6 @@ if __name__ == "__main__":
 
         test(m, k, n, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X)
 
-    import sys
-    sys.exit()
 
     def test_two():
         ## Basice parameters to multiply: m*k by k*n -> m*n matrix.
@@ -227,7 +257,7 @@ if __name__ == "__main__":
         m: int = 10
         k: int = 10
         p: int = 5 ## Sparsity parameter.
-        GPU_ID : int = 0
+        GPU_ID : Any = "cpu"
         BLOCK_SIZE_Y : int = 16
         BLOCK_SIZE_X : int = 16
 
@@ -242,7 +272,7 @@ if __name__ == "__main__":
         m: int = 10
         k: int = 10
         p: int = 7 ## Sparsity parameter.
-        GPU_ID : int = 0
+        GPU_ID : Any = 'cpu'
         BLOCK_SIZE_Y : int = 16
         BLOCK_SIZE_X : int = 16
 
@@ -257,7 +287,7 @@ if __name__ == "__main__":
         m: int = 16
         k: int = 16
         p: int = 5 ## Sparsity parameter.
-        GPU_ID : int = 0
+        GPU_ID : Any = 'cpu'
         BLOCK_SIZE_Y : int = 16
         BLOCK_SIZE_X : int = 16
 
@@ -272,7 +302,7 @@ if __name__ == "__main__":
         m: int = 16
         k: int = 16
         p: int = 16 ## Sparsity parameter.
-        GPU_ID : int = 0
+        GPU_ID : Any = 'cpu'
         BLOCK_SIZE_Y : int = 16
         BLOCK_SIZE_X : int = 16
 
@@ -287,13 +317,13 @@ if __name__ == "__main__":
         m: int = 32
         k: int = 32
         p: int = 10 ## Sparsity parameter.
-        GPU_ID : int = 0
+        GPU_ID : Any = 'cpu'
         BLOCK_SIZE_Y : int = 16
         BLOCK_SIZE_X : int = 16
 
         ## Instantiate a mask.
         mask = create_blocked_mask(n, p)
-
+        
         test(m, k, n, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X)
 
     def test_seven():
@@ -302,7 +332,7 @@ if __name__ == "__main__":
         m: int = 32
         k: int = 32
         p: int = 20 ## Sparsity parameter.
-        GPU_ID : int = 0
+        GPU_ID : Any = 'cpu'
         BLOCK_SIZE_Y : int = 16
         BLOCK_SIZE_X : int = 16
 
@@ -317,7 +347,7 @@ if __name__ == "__main__":
         m: int = 32
         k: int = 32
         p: int = 32 ## Sparsity parameter.
-        GPU_ID : int = 0
+        GPU_ID : Any = 'cpu'
         BLOCK_SIZE_Y : int = 16
         BLOCK_SIZE_X : int = 16
 
@@ -332,7 +362,7 @@ if __name__ == "__main__":
         m: int = 128
         k: int = 128
         p: int = 57 ## Sparsity parameter.
-        GPU_ID : int = 0
+        GPU_ID : Any = 'cpu'
         BLOCK_SIZE_Y : int = 16
         BLOCK_SIZE_X : int = 16
 
@@ -352,6 +382,7 @@ if __name__ == "__main__":
     test_eight()
     test_nine()
 
+    ## Currently, these fail. TODO(ahangupta), figure out what's going on. Priority: low.
     ## Larger tests.
     def test_ten():
         ## Basice parameters to multiply: m*k by k*n -> m*n matrix.
@@ -359,7 +390,7 @@ if __name__ == "__main__":
         m: int = 1024
         k: int = 1024
         p: int = 256 ## Sparsity parameter.
-        GPU_ID : int = 0
+        GPU_ID : Any = 0
         BLOCK_SIZE_Y : int = 16
         BLOCK_SIZE_X : int = 16
 

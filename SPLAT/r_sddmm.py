@@ -258,7 +258,7 @@ def rsddmm_launcher(x : torch.Tensor,
     tb_map_x, tb_map_y = gen_block_mappings(mask, BLOCK_SIZE_Y, BLOCK_SIZE_X, GPU_ID)
 
     ## Finally, we instantiate the acsr metadata.
-    dTos_linear_transformations, dTos_translations, sTod_linear_transformations, sTod_translations, nnzs = create_acsr(mask, BLOCK_SIZE_Y, GPU_ID)
+    dTos_linear_transformations, dTos_translations, sTod_linear_transformations, sTod_translations, nnzs, _, _ = create_acsr(mask, BLOCK_SIZE_Y, GPU_ID)
 
     assert tb_map_x.shape == tb_map_y.shape, "Incorrect tiling arrangement!"
 

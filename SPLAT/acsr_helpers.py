@@ -8,6 +8,7 @@ import numpy as np
 from dataclasses import dataclass
 from typing import Type 
 from functools import reduce
+from math import ceil
 
 ## Here we have all the type-aliases used within this script. 
 ##   Only use if current script fails remove otherwise.
@@ -59,9 +60,11 @@ class AffineIndicesInt:
 class ACSR:
     def __init__(self, 
                 affine_indices :  list[Type[AffineIndices]] , 
-                affine_indices_int : list[Type[AffineIndicesInt]]):
+                affine_indices_int : list[Type[AffineIndicesInt]],
+                span_specialised_loop_idxs : list[tuple[int]]):
         self.affine_indices = affine_indices
         self.affine_indices_int = affine_indices_int
+        self.span_specialised_loop_idxs = span_specialised_loop_idxs
 
     def get_dTos_linear_transformations(self) -> list[float]:
         return list(map(lambda x: x.linear_transformation, self.affine_indices))
@@ -78,12 +81,17 @@ class ACSR:
     def get_nnzs(self) -> list[float]:
         return list(map(lambda x: x.nnz, self.affine_indices))
 
+    def get_span_specialised_data(self) -> list[tuple[int]]:
+        return self.span_specialised_loop_idxs
+
 ## We create all the necessary metadata required for the ACSR.
 def instantiate_metadata(mask, BLOCK_HEIGHT : int):
     affine_indices_dTos : list[Type[AffineIndices]] = [] ## Dense to sparse mapping.
     affine_indices_sToD : list[Type[AffineIndicesInt]] = [] ## Sparse to dense mapping.
     nnzs : list[int] = [] ## Number of non-zero values.
-    ## TODO, need to add optimisations: span-specialisation and transformation-alignment.
+    span_specialised_loop_data : list[tuple[int]] = [(len(mask[0]), -1) for _ in range(ceil(len(mask) / BLOCK_HEIGHT))]
+
+    ## TODO, need to add optimisation: transformation-alignment.
     for row in range(len(mask)):
         ## We grab the first two non-zero elements.
         a = -1
@@ -101,10 +109,20 @@ def instantiate_metadata(mask, BLOCK_HEIGHT : int):
         affine_indices = np.linalg.solve(np.array([[a, 1], [b, 1]]), np.array([0,1]))
         curr_nnz = reduce(lambda x,y : x+y, mask[row],0)
         affine_indices_dTos.append(AffineIndices(affine_indices[0],affine_indices[1], curr_nnz))
-        affine_indices_sToD.append(AffineIndicesInt(round(1/affine_indices[0]), -affine_indices[1], curr_nnz))
+        affine_indices_sToD.append(AffineIndicesInt(round(1/affine_indices[0]), abs(affine_indices[1]), curr_nnz))
         nnzs.append(curr_nnz)
 
-    return ACSR(affine_indices_dTos, affine_indices_sToD)
+        ## Populate data for optimisations.
+
+        ## Populate span_specialisation loop data.
+        sTod_trf = round(1/affine_indices[0])
+        sTod_translation = abs(affine_indices[1])
+        curr_start = span_specialised_loop_data[row // BLOCK_HEIGHT][0]
+        curr_end = span_specialised_loop_data[row // BLOCK_HEIGHT][1]
+        span_specialised_loop_data[row // BLOCK_HEIGHT] = (min(curr_start, sTod_translation),
+                                                           max(curr_end, curr_nnz*sTod_trf + sTod_translation))
+
+    return ACSR(affine_indices_dTos, affine_indices_sToD, span_specialised_loop_data)
 
 ## Now we have to send everything to the GPU!
 def create_acsr(mask : list[list[int]], BLOCK_HEIGHT : int, GPU_ID : int):
@@ -115,8 +133,14 @@ def create_acsr(mask : list[list[int]], BLOCK_HEIGHT : int, GPU_ID : int):
     sTod_linear_transformations = torch.Tensor(acsr.get_sTod_linear_transformations()).to(GPU_ID)
     sTod_translations = torch.Tensor(acsr.get_sTod_translations()).to(GPU_ID)
     nnzs = torch.Tensor(acsr.get_nnzs()).to(GPU_ID)
+
+    ## Metadata for optimisations.
+    span_spec_loop_start = torch.Tensor(list(map(lambda x: x[0], acsr.get_span_specialised_data()))).to(GPU_ID)
+    span_spec_loop_end = torch.Tensor(list(map(lambda x: x[1], acsr.get_span_specialised_data()))).to(GPU_ID)
     return (dTos_linear_transformations,dTos_translations,
-                sTod_linear_transformations,sTod_translations,nnzs)  
+                sTod_linear_transformations,sTod_translations,nnzs,
+                ## Optimisation metadata.
+                span_spec_loop_start, span_spec_loop_end)  
 
 
 if __name__ == "__main__":
@@ -128,7 +152,7 @@ if __name__ == "__main__":
     BLOCK_HEIGHT = 2
     GPU_ID = 0
     mask = create_blocked_mask(n, p)
-    a,b,c,d,e = create_acsr(mask, BLOCK_HEIGHT, GPU_ID)
+    a,b,c,d,e,f = create_acsr(mask, BLOCK_HEIGHT, GPU_ID)
     print(f'dTos a: {a}')
     print(f'dTos b: {b}')
     print(f'sTod a: {c}')
