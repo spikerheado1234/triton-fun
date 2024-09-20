@@ -57,9 +57,7 @@ def r_softmax_kernel(
     ##   How will the generated code differ?
     ptrs = bx_start*true_trailing_dim + tl.arange(0, power_two_trailing_dim)[None, :] + tl.arange(0, BLOCK_SIZE_X)[:, None]*true_trailing_dim
     
-    ## TODO(ahangupta): check if this should have an equality or not.
     mask_ptrs = tl.arange(0, power_two_trailing_dim)[None, :] + tl.zeros((BLOCK_SIZE_X, 1), dtype=tl.int64) < edge_idx
-    ## Leading dimension OOB check.
     mask_ptrs = mask_ptrs & (bx_start + tl.arange(0, BLOCK_SIZE_X)[:, None] < m)
 
     rows = tl.load(x_ptr + ptrs, mask=mask_ptrs, other=-1e9)
@@ -75,7 +73,19 @@ def r_softmax_kernel(
 
     tl.store(out_ptr + ptrs, softmax_out, mask=mask_ptrs)
 
-def rsoftmax_preamble(mask : list[list[int]], BLOCK_SIZE_X : int, GPU_ID : int, seq_length : int, full_shape : tuple[int]):
+def rsoftmax_preamble(mask : list[list[int]], BLOCK_SIZE_X : int, GPU_ID : int):
+
+    ## Now, left tensor is an ACSR. we need to generate its trailing dimension.
+    trailing_dim_acsr = max(
+        [reduce(lambda a,b: a+b, row, 0) for row in mask]
+        )
+
+    ## We have to pass in the next power of two as the trailing_dim.
+    trailing_dim_pow_two = 2**ceil(log2(trailing_dim_acsr))
+
+    full_shape = (len(mask), trailing_dim_acsr)
+
+
     ## First we create the output tensor.
     output : torch.Tensor = torch.empty(full_shape, dtype=torch.float32).to(GPU_ID)
 
@@ -87,32 +97,26 @@ def rsoftmax_preamble(mask : list[list[int]], BLOCK_SIZE_X : int, GPU_ID : int, 
         )
 
     ## Finally, we can launch the kernel
-    grid_dim = (triton.cdiv(seq_length, BLOCK_SIZE_X),)
+    grid_dim = (triton.cdiv(len(mask), BLOCK_SIZE_X),)
 
     return (
         dTos_linear_transformations, dTos_translations, 
         sTod_linear_transformations, sTod_translations, 
-        nnzs, grid_dim
+        nnzs, grid_dim, output, full_shape, trailing_dim_pow_two,
+        trailing_dim_acsr
         )
 
-def rsoftmax_launcher(x : torch.Tensor, acsr_trailing_dim_true : int, acsr_trailing_dim_power_two: int, mask : list[list[int]], GPU_ID : int, 
-                      BLOCK_SIZE_X : int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+def rsoftmax_launcher(
+        x : torch.Tensor, output : torch.Tensor, 
+        dTos_linear_transformations : torch.Tensor, dTos_translations : torch.Tensor,
+        sTod_linear_transformations : torch.Tensor, sTod_translations : torch.Tensor,
+        acsr_trailing_dim_true : int, acsr_trailing_dim_power_two: int, 
+        nnzs : torch.Tensor,
+        grid_dim : tuple[int], BLOCK_SIZE_X : int
+         ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
 
-    ## First we create the output tensor.
-    output : torch.Tensor = torch.empty(x.shape, dtype=torch.float32).to(GPU_ID)
-
-    ## We instantiate the acsr metadata.
-    dTos_linear_transformations, dTos_translations, \
-    sTod_linear_transformations, sTod_translations, nnzs, \
-    _, _ = create_acsr(
-        mask, BLOCK_SIZE_X, GPU_ID
-        )
-
-    ## Finally, we can launch the kernel
-    grid_dim = (triton.cdiv(x.shape[0], BLOCK_SIZE_X),)
 
     #torch.cuda.synchronize()
-    rsoftmax_start = time.time()
     r_softmax_kernel[grid_dim](x,output,
                         dTos_linear_transformations,dTos_translations, 
                         sTod_linear_transformations,sTod_translations,nnzs,
@@ -120,9 +124,7 @@ def rsoftmax_launcher(x : torch.Tensor, acsr_trailing_dim_true : int, acsr_trail
                         acsr_trailing_dim_power_two, BLOCK_SIZE_X=BLOCK_SIZE_X, num_warps=2
                         )
     #torch.cuda.synchronize()
-    rsoftmax_end = time.time()
-    print(f'time taken splat: {(rsoftmax_end - rsoftmax_start):.15f}')
-    print(f'rspmm kernel output shape: {output.shape}')
+
     ## We return the sTod arrays for correctness checking only.
     return (output, sTod_linear_transformations, sTod_translations, nnzs)
 
@@ -159,25 +161,25 @@ def is_correct(
         return True
 
 ## Compute the softmax over mask. -> mask is size [m, n]. This is its "dense" size.
-def test(m: int, n : int, mask : list[list[int]], 
-         GPU_ID : int, BLOCK_SIZE_Y : int, BLOCK_SIZE_X : int):
+def test(
+        m: int, n : int, mask : list[list[int]], 
+        GPU_ID : int, BLOCK_SIZE_X : int,
+        ):
 
     assert m==n, "We only need to consider the case when m=n."
 
-    ## Now, left tensor is an ACSR. we need to generate its trailing dimension.
-    trailing_dim_acsr = max(
-        [reduce(lambda a,b: a+b, row, 0) for row in mask])
+    dTos_linear_transformations, dTos_translations, \
+    sTod_linear_transformations, sTod_translations, \
+    nnzs, grid_dim, output, full_shape, trailing_dim_pow_two, trailing_dim_acsr = rsoftmax_preamble(mask, BLOCK_SIZE_X, GPU_ID)
 
-    ## We have to pass in the next power of two as the trailing_dim.
-    trailing_dim_pow_two = 2**ceil(log2(trailing_dim_acsr))
-
-    inp : torch.Tensor = torch.randint(0, 100, (
-        m, trailing_dim_acsr
-        ),dtype=torch.float32).to(GPU_ID)
+    inp : torch.Tensor = torch.randint(0, 100, full_shape,
+                                       dtype=torch.float32).to(GPU_ID)
 
     ## Call the rsddmm launcher.
     rspmm_output, sTod_linear_transformations, sTod_translations, nnzs = rsoftmax_launcher(
-        inp, trailing_dim_acsr, trailing_dim_pow_two, mask, GPU_ID, 
+        inp, output, dTos_linear_transformations, dTos_translations, 
+        sTod_linear_transformations, sTod_translations,
+        trailing_dim_acsr, trailing_dim_pow_two, nnzs, grid_dim, 
         BLOCK_SIZE_X
         )
 
@@ -197,13 +199,12 @@ if __name__ == "__main__":
         m: int = 10
         p: int = 2 ## Sparsity parameter.
         GPU_ID : Any = 'cpu'
-        BLOCK_SIZE_Y : int = 16
         BLOCK_SIZE_X : int = 16
 
         ## Instantiate a mask.
         mask = create_blocked_mask(n, p)
 
-        test(m, n, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X)
+        test(m, n, mask, GPU_ID, BLOCK_SIZE_X)
 
 
     def test_two():
@@ -212,13 +213,12 @@ if __name__ == "__main__":
         m: int = 10
         p: int = 5 ## Sparsity parameter.
         GPU_ID : Any = 'cpu'
-        BLOCK_SIZE_Y : int = 16
         BLOCK_SIZE_X : int = 16
 
         ## Instantiate a mask.
         mask = create_blocked_mask(n, p)
 
-        test(m, n, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X)
+        test(m, n, mask, GPU_ID, BLOCK_SIZE_X)
 
     def test_three():
 
@@ -226,13 +226,12 @@ if __name__ == "__main__":
         m: int = 10
         p: int = 7 ## Sparsity parameter.
         GPU_ID : Any = 'cpu'
-        BLOCK_SIZE_Y : int = 16
         BLOCK_SIZE_X : int = 16
 
         ## Instantiate a mask.
         mask = create_blocked_mask(n, p)
 
-        test(m, n, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X)
+        test(m, n, mask, GPU_ID, BLOCK_SIZE_X)
 
 
     def test_four():
@@ -241,13 +240,12 @@ if __name__ == "__main__":
         m: int = 16
         p: int = 5 ## Sparsity parameter.
         GPU_ID : Any = 'cpu'
-        BLOCK_SIZE_Y : int = 16
         BLOCK_SIZE_X : int = 16
 
         ## Instantiate a mask.
         mask = create_blocked_mask(n, p)
 
-        test(m, n, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X)
+        test(m, n, mask, GPU_ID, BLOCK_SIZE_X)
 
     def test_five():
 
@@ -255,13 +253,12 @@ if __name__ == "__main__":
         m: int = 16
         p: int = 16 ## Sparsity parameter.
         GPU_ID : Any = 'cpu'
-        BLOCK_SIZE_Y : int = 16
         BLOCK_SIZE_X : int = 16
 
         ## Instantiate a mask.
         mask = create_blocked_mask(n, p)
 
-        test(m, n, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X)
+        test(m, n, mask, GPU_ID, BLOCK_SIZE_X)
 
     def test_six():
 
@@ -269,13 +266,12 @@ if __name__ == "__main__":
         m: int = 32
         p: int = 10 ## Sparsity parameter.
         GPU_ID : Any = 'cpu'
-        BLOCK_SIZE_Y : int = 16
         BLOCK_SIZE_X : int = 16
 
         ## Instantiate a mask.
         mask = create_blocked_mask(n, p)
 
-        test(m, n, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X)
+        test(m, n, mask, GPU_ID, BLOCK_SIZE_X)
 
     def test_seven():
 
@@ -283,13 +279,12 @@ if __name__ == "__main__":
         m: int = 32
         p: int = 20 ## Sparsity parameter.
         GPU_ID : Any = 'cpu'
-        BLOCK_SIZE_Y : int = 16
         BLOCK_SIZE_X : int = 16
 
         ## Instantiate a mask.
         mask = create_blocked_mask(n, p)
 
-        test(m, n, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X)
+        test(m, n, mask, GPU_ID, BLOCK_SIZE_X)
 
     def test_eight():
 
@@ -297,13 +292,12 @@ if __name__ == "__main__":
         m: int = 32
         p: int = 32 ## Sparsity parameter.
         GPU_ID : Any = 'cpu'
-        BLOCK_SIZE_Y : int = 16
         BLOCK_SIZE_X : int = 16
 
         ## Instantiate a mask.
         mask = create_blocked_mask(n, p)
 
-        test(m, n, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X)
+        test(m, n, mask, GPU_ID, BLOCK_SIZE_X)
 
     def test_nine():
 
@@ -311,13 +305,12 @@ if __name__ == "__main__":
         m: int = 128
         p: int = 57 ## Sparsity parameter.
         GPU_ID : Any = 'cpu'
-        BLOCK_SIZE_Y : int = 16
         BLOCK_SIZE_X : int = 16
 
         ## Instantiate a mask.
         mask = create_blocked_mask(n, p)
 
-        test(m, n, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X)
+        test(m, n, mask, GPU_ID, BLOCK_SIZE_X)
 
     ## These are pretty small tests.
     test_one()
@@ -337,13 +330,12 @@ if __name__ == "__main__":
         m: int = 1024
         p: int = 256 ## Sparsity parameter.
         GPU_ID : int = 0
-        BLOCK_SIZE_Y : int = 16
         BLOCK_SIZE_X : int = 16
 
         ## Instantiate a mask.
         mask = create_blocked_mask(n, p)
 
-        test(m, n, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X)
+        test(m, n, mask, GPU_ID, BLOCK_SIZE_X)
 
     def test_eleven():
 
@@ -351,13 +343,12 @@ if __name__ == "__main__":
         m: int = 1024
         p: int = 328 ## Sparsity parameter.
         GPU_ID : int = 0
-        BLOCK_SIZE_Y : int = 16
         BLOCK_SIZE_X : int = 16
 
         ## Instantiate a mask.
         mask = create_blocked_mask(n, p)
 
-        test(m, n, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X)
+        test(m, n, mask, GPU_ID, BLOCK_SIZE_X)
 
     def test_twelve():
 
@@ -365,13 +356,12 @@ if __name__ == "__main__":
         m: int = 1024
         p: int = 512 ## Sparsity parameter.
         GPU_ID : int = 0
-        BLOCK_SIZE_Y : int = 16
         BLOCK_SIZE_X : int = 16
 
         ## Instantiate a mask.
         mask = create_blocked_mask(n, p)
 
-        test(m, n, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X)
+        test(m, n, mask, GPU_ID, BLOCK_SIZE_X)
 
     test_ten()
     test_eleven()
