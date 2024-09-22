@@ -133,12 +133,12 @@ def create_acsr(mask : list[list[int]], BLOCK_HEIGHT : int, GPU_ID : int):
     sTod_linear_transformations = torch.Tensor(acsr.get_sTod_linear_transformations()).to(GPU_ID)
     sTod_translations = torch.Tensor(acsr.get_sTod_translations()).to(GPU_ID)
     nnzs = torch.Tensor(acsr.get_nnzs()).to(GPU_ID)
-
+    trailing_dim_acsr = max([reduce(lambda a,b: a+b, row, 0) for row in mask])
     ## Metadata for optimisations.
     span_spec_loop_start = torch.Tensor(list(map(lambda x: x[0], acsr.get_span_specialised_data()))).to(GPU_ID)
     span_spec_loop_end = torch.Tensor(list(map(lambda x: x[1], acsr.get_span_specialised_data()))).to(GPU_ID)
     return (dTos_linear_transformations,dTos_translations,
-                sTod_linear_transformations,sTod_translations,nnzs,
+                sTod_linear_transformations,sTod_translations,nnzs,trailing_dim_acsr,
                 ## Optimisation metadata.
                 span_spec_loop_start, span_spec_loop_end)  
 

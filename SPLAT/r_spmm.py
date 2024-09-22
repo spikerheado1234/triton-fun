@@ -7,11 +7,11 @@ import time
 from acsr_helpers import create_acsr, create_blocked_mask, create_windowed_mask
 import pdb
 
-## This is a naive spmm kernel with the incoming ACSR (x_ptr) in row-major and row-compressed.
+## This is a spmm kernel with the incoming ACSR (x_ptr) in row-major and row-compressed.
 ## This represents an: (mxk) x (kxn) matrix multiplication.
 ## Trailing dimension represents the SPARSE trailing dimension of the ACSR (left-matrix).
 @triton.jit
-def rspmm_kernel_row_maj_row_comp(
+def r_spmm_kernel_row_maj_row_comp(
     x_ptr, y_ptr, 
     out_ptr, dTos_linear_trf, dTos_translations, 
     sTod_linear_trf, sTod_translations, nnzs,
@@ -72,7 +72,6 @@ def rspmm_kernel_row_maj_row_comp(
     loop_end : tl.constexpr = tl.load(span_loop_end + tl.program_id(axis=1), mask=True)
     ## Opt-2: transformation-alignment. (TODO(ahangupta): finish implementing at a later date.)
 
-    ## TODO(ahangupta): check the implications of using a div_rn in this loop.
     for i in range(
         tl.floor(tl.div_rn(loop_start, inner_tile)), 
         tl.cdiv(loop_end.to(tl.int64), inner_tile)
@@ -112,8 +111,8 @@ def rspmm_kernel_row_maj_row_comp(
         y_ptrs += inner_tile*n
         dense_col_idxs += i*inner_tile
 
-    ## Need to implement write-back logic.
-
+    ## Write-back logic.
+    
     ## Now, write-backs are straightfoward since the output is dense.
     write_ptrs = bx_start + tl.arange(0, BLOCK_SIZE_X)[None, :] + (by_start*n + tl.arange(0, BLOCK_SIZE_Y)[:, None]*n)
     ## Check whether leading dimension OOB.
@@ -121,28 +120,36 @@ def rspmm_kernel_row_maj_row_comp(
     write_ptrs_mask = write_ptrs_mask & (by_start + tl.arange(0, BLOCK_SIZE_Y)[:, None] < n)
     tl.store(out_ptr + write_ptrs, accumulator, mask=write_ptrs_mask)
 
-## Over here, x is an ACSR and y is the Values tensor.
-def rspmm_launcher(x : torch.Tensor, 
-                   y : torch.Tensor,
-                   acsr_trailing_dim : int,
-                   mask : list[list[int]], GPU_ID : int, 
-                   BLOCK_SIZE_Y : int, BLOCK_SIZE_X : int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+def rspmm_preamble(mask : list[list[int]], output_shape : tuple[int],
+                   BLOCK_SIZE_X : int, BLOCK_SIZE_Y : int, GPU_ID : int) -> tuple[torch.Tensor, tuple[int], int]:
+
+    ## Now, left tensor is an ACSR. we need to generate its trailing dimension.
+    trailing_dim_acsr = max(
+        [reduce(lambda a,b: a+b, row, 0) for row in mask]
+        )
 
     ## First we create the output tensor.
-    output : torch.Tensor = torch.empty((x.shape[0], y.shape[-1]), dtype=torch.float32).to(GPU_ID)
+    output : torch.Tensor = torch.empty(output_shape, 
+                                        dtype=torch.float32).to(GPU_ID)
 
-    ## We instantiate the acsr metadata.
-    dTos_linear_transformations, dTos_translations, sTod_linear_transformations, \
-    sTod_translations, nnzs, span_loop_start, span_loop_end = create_acsr(
-        mask, BLOCK_SIZE_Y, GPU_ID
-        )
-    print(f'span spec loop data start: {span_loop_start}')
-    print(f'span spec loop data end: {span_loop_end}')
     ## Finally, we can launch the kernel
-    grid_dim = (triton.cdiv(y.shape[1], BLOCK_SIZE_X),triton.cdiv(x.shape[0], BLOCK_SIZE_Y))
-    #torch.cuda.synchronize()
+    grid_dim = (triton.cdiv(output_shape[1], BLOCK_SIZE_X),triton.cdiv(output_shape[0], BLOCK_SIZE_Y))
+
+    return (
+        output, grid_dim, trailing_dim_acsr
+    )
+
+## Over here, x is an ACSR and y is the Values tensor.
+def rspmm_launcher(x : torch.Tensor, y : torch.Tensor, output : torch.Tensor,
+                   dTos_linear_transformations : torch.Tensor, dTos_translations : torch.Tensor,
+                   sTod_linear_transformations : torch.Tensor, sTod_translations : torch.Tensor,
+                   span_loop_start : torch.Tensor, span_loop_end : torch.Tensor,
+                   acsr_trailing_dim : int, nnzs : torch.Tensor,
+                   grid_dim : tuple[int], 
+                   BLOCK_SIZE_Y : int, BLOCK_SIZE_X : int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+
     rsddmm_start = time.time()
-    rspmm_kernel_row_maj_row_comp[grid_dim](x,y,output, 
+    r_spmm_kernel_row_maj_row_comp[grid_dim](x,y,output, 
                                             dTos_linear_transformations,dTos_translations, 
                                             sTod_linear_transformations,sTod_translations,nnzs,
                                             x.shape[0],y.shape[1],y.shape[0], acsr_trailing_dim,
@@ -209,9 +216,8 @@ def is_correct(
 def test(m: int, k : int, n : int, mask : list[list[int]], GPU_ID : Any, BLOCK_SIZE_Y : int, BLOCK_SIZE_X : int):
     ## Some simple test-cases for me to try out.
     assert m==n, "We only need to consider the case when m=n."
-    #left : torch.Tensor = torch.randn((m,k),dtype=torch.float32).to(GPU_ID)
-    #right : torch.Tensor = torch.randn((k,n),dtype=torch.float32).to(GPU_ID)
-    ## Now, left tensor is an ACSR. we need to generate its trailing dimension.
+
+    ## Create left and right random inputs.
     trailing_dim_acsr = max([reduce(lambda a,b: a+b, row, 0) for row in mask])
 
     left : torch.Tensor = torch.randint(0, 100, (
@@ -220,11 +226,26 @@ def test(m: int, k : int, n : int, mask : list[list[int]], GPU_ID : Any, BLOCK_S
 
     right : torch.Tensor = torch.randint(0, 100, (k,n),dtype=torch.float32).to(GPU_ID)
 
+    ## Create acsr.
+    dTos_linear_transformations, dTos_translations, \
+    sTod_linear_transformations, sTod_translations, nnzs, _, \
+    span_loop_start, span_loop_end = create_acsr(
+        mask, BLOCK_SIZE_X, GPU_ID
+        )
+
+    ## Call rspmm preamble.
+    output_tensor, grid_dim, trailing_dim_acsr = rspmm_preamble(mask, (m, n), BLOCK_SIZE_X, BLOCK_SIZE_Y, GPU_ID)
+
     ## Call the rsddmm launcher.
     rspmm_output, sTod_linear_transformations, sTod_translations, nnzs = rspmm_launcher(
-        left, right, trailing_dim_acsr, mask, GPU_ID, 
+        left, right, output_tensor,
+        dTos_linear_transformations, dTos_translations,
+        sTod_linear_transformations, sTod_translations,
+        span_loop_start, span_loop_end,
+        trailing_dim_acsr, nnzs, grid_dim, 
         BLOCK_SIZE_Y, BLOCK_SIZE_X
         )
+
     is_correct(
         left, right,
         rspmm_output, 

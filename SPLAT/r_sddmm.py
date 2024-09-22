@@ -9,6 +9,7 @@ from functools import reduce
 import torch 
 import pdb
 import time
+from typing import Any
 
 ## This is a matrix multiplication of: m*k by k*n -> m*n matrix. NOTE, this is a general mat-mul kernel. 
 @triton.jit
@@ -53,7 +54,7 @@ def rsddmm_kernel(x_ptr, y_ptr,
 
     ## This uses the sTOd affine-indices for scaling the indices of where to store.
     linear_transforms = tl.load(sTod_linear_trf+by_start+tl.arange(0,BLOCK_SIZE_Y), 
-                                mask=by_start+tl.arange(0,BLOCK_SIZE_Y)<m, other=0.0)
+                                mask=by_start+tl.arange(0,BLOCK_SIZE_Y)<m, other=1.0)
     translations = tl.load(sTod_translations+by_start+tl.arange(0, BLOCK_SIZE_Y),
                            mask=by_start+tl.arange(0,BLOCK_SIZE_Y)<m,other=0.0)
     nnz = tl.load(nnzs+by_start+tl.arange(0,BLOCK_SIZE_Y), 
@@ -98,110 +99,12 @@ def rsddmm_kernel(x_ptr, y_ptr,
 
     ## Unfortunately, broadcast semantics don't apply to the "==" operator.
     ##    So we have to do design a new bolean operator: ~op1 && ~op2
-    ## Intresting bug. Setting interpreter=True, 
-    ##   tl.int64 throws an error whilst torch.int64 does not. Turning off interpreter mode, the reverse is true.
-    #op_one = (col_idx % linear_transforms[:, None]).to(torch.int64) > 0
-    #op_two = (col_idx % linear_transforms[:,None]).to(torch.int64) < 0
+    '''For some reason, this is no longer working. We replace it with the equivalent col_idx % linear_transforms[:, None] == 0 check.
     op_one = (col_idx % linear_transforms[:, None]).to(tl.int64) > 0
     op_two = (col_idx % linear_transforms[:,None]).to(tl.int64) < 0
     output_mask = output_mask & ((not op_one) & (not op_two))
-    ## Lastly, we check for OOB due to exceeding nnz count.
-    output_mask = output_mask & (col_idx < nnz[:,None])
-
-    tl.store(out_ptr + output_ptrs, accumulator, mask=output_mask)
-
-## This is a matrix multiplication of: m*k by k*n -> m*n matrix. NOTE, this is a general mat-mul kernel. 
-## This is a debug build. To show correctness.
-@triton.jit
-def rsddmm_kernel_debug(x_ptr, y_ptr, 
-                        out_ptr, dTos_linear_trf, dTos_translations, 
-                        sTod_linear_trf, sTod_translations, nnzs,
-                        m, n, k, trailing_dim, tb_mapping_x, tb_mapping_y, 
-                        BLOCK_SIZE_Y : tl.constexpr, BLOCK_SIZE_X : tl.constexpr):
-    
-    bx = tl.program_id(axis=0)
-
-    ## We first unpack the tb_maps to uncover the top left x and y coordinate.
-    bx_start = tl.load(tb_mapping_x+bx).to(torch.int32)
-    by_start = tl.load(tb_mapping_y+bx).to(torch.int32)
-
-    inner_tile_dim : tl.constexpr = 128
-
-    x_ptrs = by_start*k + tl.arange(0, BLOCK_SIZE_Y)[:,None]*k + tl.arange(0, inner_tile_dim)[None,:]
-    y_ptrs = bx_start + tl.arange(0, inner_tile_dim)[:,None]*n + tl.arange(0, BLOCK_SIZE_X)[None,:]
-
-    accumulator = tl.zeros((BLOCK_SIZE_Y, BLOCK_SIZE_X), dtype=tl.float32)
-
-    for i in range(tl.cdiv(k, inner_tile_dim)):
-        
-        ## Let's do this naively at first.
-        mask_x_ptrs = i*inner_tile_dim + tl.arange(0, inner_tile_dim)[None,:] < k ## The first constraint
-        mask_x_ptrs = mask_x_ptrs & (tl.arange(0, BLOCK_SIZE_Y)[:,None] + by_start < m)
-        mask_y_ptrs = i*inner_tile_dim + tl.arange(0, inner_tile_dim)[:, None] < k
-        mask_y_ptrs = mask_y_ptrs & (tl.arange(0, BLOCK_SIZE_X)[None, :] + bx_start < n)
-        x_tile = tl.load(x_ptr + x_ptrs, mask=mask_x_ptrs, other=0.0)
-        y_tile = tl.load(y_ptr + y_ptrs, mask=mask_y_ptrs, other=0.0)
-
-        accumulator += tl.dot(x_tile, y_tile)
-
-        ## Increment x and y pointers here now.
-        x_ptrs += inner_tile_dim
-        y_ptrs += inner_tile_dim*n
-
-    accumulator = accumulator.to(out_ptr.dtype.element_ty)
-
-    ## This uses the sTOd affine-indices for scaling the indices of where to store.
-    linear_transforms = tl.load(sTod_linear_trf+by_start+tl.arange(0,BLOCK_SIZE_Y), 
-                                mask=by_start+tl.arange(0,BLOCK_SIZE_Y)<m, other=0.0)
-    translations = tl.load(sTod_translations+by_start+tl.arange(0, BLOCK_SIZE_Y),
-                           mask=by_start+tl.arange(0,BLOCK_SIZE_Y)<m,other=0.0)
-    nnz = tl.load(nnzs+by_start+tl.arange(0,BLOCK_SIZE_Y), 
-                  mask=by_start+tl.arange(0,BLOCK_SIZE_Y)<m, other=0.0)
-    
-    ## Now, we have to use these to recover the true-indices.
-
-    ## We do this in 5 steps. 
-    ## First: we compute the col_indices pertinent to this TB.
-    ## Second: we scale the col_indices using the linear_transforms and translations array.
-    ## Third: We convert the col_indices into ptrs.
-    ## Fourth: We generate the mask.
-    ## Fifth: We store into the ACSR array.
-
-    ## Step 1
-
-    ## Interestingly, this line throws a ValueError thinking its not wrapped
-    ##   within a trion jitted function. We use tl.zeros instead.
-    #col_idx = tl.full((BLOCK_SIZE_Y,), 0, tl.int32)
-    col_idx = tl.zeros((BLOCK_SIZE_Y,), dtype=tl.int32)
-    col_idx = col_idx[:,None] + tl.arange(0, BLOCK_SIZE_X)[None,:] + bx_start 
-
-    ## Step 2
-    col_idx /= linear_transforms[:,None] 
-    ## Intresting bug. Setting interpreter=True, 
-    ##   tl.int64 throws an error whilst torch.int64 does not. Turning off interpreter mode, the reverse is true.
-    col_idx -= translations[:,None].to(torch.int64)
-
-    ## Step 3 
-    output_ptrs = col_idx + tl.arange(0, BLOCK_SIZE_Y)[:,None]*trailing_dim + by_start*trailing_dim
-    ## Type casting required for tl.store compatibililty.
-    ## Intresting bug. Setting interpreter=True, 
-    ##   tl.int64 throws an error whilst torch.int64 does not. Turning off interpreter mode, the reverse is true.
-    output_ptrs = output_ptrs.to(torch.int64)
-
-    ## Step 4. 
-    ## First, we check for OOB conditions due to translations.
-    output_mask = col_idx >= 0
-    ## Next, we check if a column index maps to a valid contraction (modulo check).
-
-    ## Unfortunately, broadcast semantics don't apply to the "==" operator.
-    ##    So we have to do design a new bolean operator: ~op1 && ~op2
-    ## Intresting bug. Setting interpreter=True, 
-    ##   tl.int64 throws an error whilst torch.int64 does not. Turning off interpreter mode, the reverse is true.
-    #op_one = (col_idx % linear_transforms[:, None]).to(torch.int64) > 0
-    #op_two = (col_idx % linear_transforms[:,None]).to(torch.int64) < 0
-    op_one = (col_idx % linear_transforms[:, None]).to(tl.int64) > 0
-    op_two = (col_idx % linear_transforms[:,None]).to(tl.int64) < 0
-    output_mask = output_mask & ((not op_one) & (not op_two))
+    '''
+    output_mask = output_mask & (col_idx % linear_transforms[:, None].to(tl.int64) == 0)
     ## Lastly, we check for OOB due to exceeding nnz count.
     output_mask = output_mask & (col_idx < nnz[:,None])
 
@@ -243,48 +146,37 @@ def gen_block_mappings(mask : list[list[int]], BLOCK_HEIGHT : int,
         BLOCK_WIDTH : int, GPU_ID : int, is_naive : bool = True) -> tuple[torch.Tensor, torch.Tensor]:
     return naive_block_mappings(mask, BLOCK_HEIGHT, BLOCK_WIDTH, GPU_ID)
 
-def rsddmm_launcher(x : torch.Tensor, 
-                    y : torch.Tensor,
-                    mask : list[list[int]], GPU_ID : int, 
-                    BLOCK_SIZE_Y : int, BLOCK_SIZE_X : int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    ## First we create the output tensor.
 
-    ## compute the trailing dimension length of the ACSR.
-    trailing_dim : int = max(list(map(lambda x: reduce(lambda a,b: a+b, x, 0), mask)))
+def rsddmm_preamble(mask : list[list[int]], output_shape: tuple[int], BLOCK_SIZE_X : int,
+                    BLOCK_SIZE_Y : int, GPU_ID : int):
 
-    output : torch.Tensor = torch.empty((len(mask), trailing_dim), dtype=torch.float32).to(GPU_ID)
+    output : torch.Tensor = torch.empty((output_shape), dtype=torch.float32).to(GPU_ID)
 
     ## Next, we compute the tiling blocks.
     tb_map_x, tb_map_y = gen_block_mappings(mask, BLOCK_SIZE_Y, BLOCK_SIZE_X, GPU_ID)
-
-    ## Finally, we instantiate the acsr metadata.
-    dTos_linear_transformations, dTos_translations, sTod_linear_transformations, sTod_translations, nnzs, _, _ = create_acsr(mask, BLOCK_SIZE_Y, GPU_ID)
 
     assert tb_map_x.shape == tb_map_y.shape, "Incorrect tiling arrangement!"
 
     ## Finally, we can launch the kernel
     grid_dim = (tb_map_x.shape[0],)
-    
-    for _ in range(5):
-        rsddmm_kernel[grid_dim](x,y,output, 
-                            dTos_linear_transformations,dTos_translations, 
-                            sTod_linear_transformations,sTod_translations,nnzs,
-                            x.shape[0],y.shape[1],x.shape[1], trailing_dim, tb_map_x, tb_map_y,
-                            BLOCK_SIZE_Y=BLOCK_SIZE_Y, BLOCK_SIZE_X=BLOCK_SIZE_X, num_warps=2)
 
-    torch.cuda.synchronize()
+    return (
+        output, grid_dim, tb_map_x, tb_map_y
+    )
+
+def rsddmm_launcher(x : torch.Tensor, y : torch.Tensor, output : torch.Tensor,
+                    dTos_linear_transformations : torch.Tensor, dTos_translations : torch.Tensor,
+                    sTod_linear_transformations : torch.Tensor, sTod_translations : torch.Tensor,
+                    trailing_dim : int, nnzs : torch.Tensor, grid_dim : tuple[int],
+                    tb_map_x : torch.Tensor, tb_map_y : torch.Tensor, 
+                    BLOCK_SIZE_Y : int, BLOCK_SIZE_X : int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+
     rsddmm_start = time.time()
     rsddmm_kernel[grid_dim](x,y,output, 
                             dTos_linear_transformations,dTos_translations, 
                             sTod_linear_transformations,sTod_translations,nnzs,
                             x.shape[0],y.shape[1],x.shape[1], trailing_dim, tb_map_x, tb_map_y,
                             BLOCK_SIZE_Y=BLOCK_SIZE_Y, BLOCK_SIZE_X=BLOCK_SIZE_X, num_warps=2)
-    #rsddmm_kernel_debug[grid_dim](x,y,output, 
-    #                              dTos_linear_transformations,dTos_translations, 
-    #                              sTod_linear_transformations,sTod_translations,nnzs,
-    #                              x.shape[0],y.shape[1],x.shape[1], trailing_dim, tb_map_x, tb_map_y,
-    #                              BLOCK_SIZE_Y=BLOCK_SIZE_Y, BLOCK_SIZE_X=BLOCK_SIZE_X, num_warps=2)
-    torch.cuda.synchronize()
     rsddmm_end = time.time()
     print(f'time taken splat: {(rsddmm_end - rsddmm_start):.15f}')
     print(f'rsddmm kernel output shape: {output.shape}')
@@ -331,11 +223,27 @@ def test(m: int, k : int, n : int, mask : list[list[int]], GPU_ID : int, BLOCK_S
     #right : torch.Tensor = torch.randn((k,n),dtype=torch.float32).to(GPU_ID)
     left : torch.Tensor = torch.randint(0, 100, (m,k),dtype=torch.float32).to(GPU_ID)
     right : torch.Tensor = torch.randint(0, 100, (k,n),dtype=torch.float32).to(GPU_ID)
-    ## Compare against pytorch's einsum as ground truth.
-    torch_output = truth(left, right, GPU_ID)
+
+    dTos_linear_transformations, dTos_translations, \
+    sTod_linear_transformations, sTod_translations, nnzs, \
+    acsr_trailing_dimension, _, _ = create_acsr(
+        mask, BLOCK_SIZE_X, GPU_ID
+        )
+    
+    output_tensor, grid_dim, \
+    tb_map_x, tb_map_y = rsddmm_preamble(mask, (m, acsr_trailing_dimension), BLOCK_SIZE_X, BLOCK_SIZE_Y, GPU_ID)
 
     ## Call the rsddmm launcher.
-    rsddmm_output, sTod_linear_transformations, sTod_translations, nnzs = rsddmm_launcher(left, right, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X)
+    rsddmm_output, sTod_linear_transformations, \
+        sTod_translations, nnzs = rsddmm_launcher(left, right, output_tensor, 
+                                                  dTos_linear_transformations, dTos_translations,
+                                                  sTod_linear_transformations, sTod_translations,
+                                                  acsr_trailing_dimension, nnzs, grid_dim, 
+                                                  tb_map_x, tb_map_y, 
+                                                  BLOCK_SIZE_Y, BLOCK_SIZE_X)
+    
+    ## Verify correctness.
+    torch_output = truth(left, right, GPU_ID)
     is_correct(torch_output, rsddmm_output, sTod_linear_transformations, sTod_translations, nnzs, mask)
 
 if __name__ == "__main__":
@@ -348,7 +256,7 @@ if __name__ == "__main__":
         m: int = 10
         k: int = 10
         p: int = 2 ## Sparsity parameter.
-        GPU_ID : int = 0
+        GPU_ID : Any = 'cpu'
         BLOCK_SIZE_Y : int = 16
         BLOCK_SIZE_X : int = 16
 

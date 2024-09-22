@@ -73,37 +73,21 @@ def r_softmax_kernel(
 
     tl.store(out_ptr + ptrs, softmax_out, mask=mask_ptrs)
 
-def rsoftmax_preamble(mask : list[list[int]], BLOCK_SIZE_X : int, GPU_ID : int):
-
-    ## Now, left tensor is an ACSR. we need to generate its trailing dimension.
-    trailing_dim_acsr = max(
-        [reduce(lambda a,b: a+b, row, 0) for row in mask]
-        )
+def rsoftmax_preamble(mask : list[list[int]], output_shape: tuple[int], BLOCK_SIZE_X : int, GPU_ID : int):
 
     ## We have to pass in the next power of two as the trailing_dim.
-    trailing_dim_pow_two = 2**ceil(log2(trailing_dim_acsr))
+    trailing_dim_pow_two = 2**ceil(log2(output_shape[-1]))
 
-    full_shape = (len(mask), trailing_dim_acsr)
-
+    full_shape = output_shape
 
     ## First we create the output tensor.
     output : torch.Tensor = torch.empty(full_shape, dtype=torch.float32).to(GPU_ID)
-
-    ## We instantiate the acsr metadata.
-    dTos_linear_transformations, dTos_translations, \
-    sTod_linear_transformations, sTod_translations, nnzs, \
-    _, _ = create_acsr(
-        mask, BLOCK_SIZE_X, GPU_ID
-        )
 
     ## Finally, we can launch the kernel
     grid_dim = (triton.cdiv(len(mask), BLOCK_SIZE_X),)
 
     return (
-        dTos_linear_transformations, dTos_translations, 
-        sTod_linear_transformations, sTod_translations, 
-        nnzs, grid_dim, output, full_shape, trailing_dim_pow_two,
-        trailing_dim_acsr
+        grid_dim, output, full_shape, trailing_dim_pow_two
         )
 
 def rsoftmax_launcher(
@@ -168,14 +152,20 @@ def test(
 
     assert m==n, "We only need to consider the case when m=n."
 
+    ## Create acsr.
     dTos_linear_transformations, dTos_translations, \
-    sTod_linear_transformations, sTod_translations, \
-    nnzs, grid_dim, output, full_shape, trailing_dim_pow_two, trailing_dim_acsr = rsoftmax_preamble(mask, BLOCK_SIZE_X, GPU_ID)
+    sTod_linear_transformations, sTod_translations, nnzs, trailing_dim_acsr, \
+    _, _ = create_acsr(
+        mask, BLOCK_SIZE_X, GPU_ID
+        )
+
+    ## Call the softmax preamble.
+    grid_dim, output, full_shape, trailing_dim_pow_two = rsoftmax_preamble(mask, (m, trailing_dim_acsr), BLOCK_SIZE_X, GPU_ID)
 
     inp : torch.Tensor = torch.randint(0, 100, full_shape,
                                        dtype=torch.float32).to(GPU_ID)
 
-    ## Call the rsddmm launcher.
+    ## Finally, launch the triton kernel.
     rspmm_output, sTod_linear_transformations, sTod_translations, nnzs = rsoftmax_launcher(
         inp, output, dTos_linear_transformations, dTos_translations, 
         sTod_linear_transformations, sTod_translations,
@@ -183,6 +173,7 @@ def test(
         BLOCK_SIZE_X
         )
 
+    ## Correctness check at the end.
     is_correct(
         inp, rspmm_output, 
         sTod_linear_transformations, 
