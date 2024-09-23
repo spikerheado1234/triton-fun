@@ -72,7 +72,6 @@ class RegularAttention(nn.Module):
     ## Input x should already be in query/key/value post RoPe application.
     def forward(self, x):
         q,k,v = x
-        pdb.set_trace()
         ## First, we launch the r-sddmm.
         rsddmm_launcher(q, k, self.rsddmm_output, 
                         self.dTos_linear_transformations, self.dTos_translations, 
@@ -106,14 +105,14 @@ if __name__ == '__main__':
     head_dim : int = 10
     BLOCK_SIZE_X : int = 16
     BLOCK_SIZE_Y : int = 16
-    GPU_ID : Any = 'cpu'
+    GPU_ID : Any = 0
     p : int = 2  ## Sparsity parameter.
     mask : list[list[int]] = create_windowed_mask(seq_length, p)
 
     attn = RegularAttention(batch, seq_length, heads, head_dim, mask, BLOCK_SIZE_Y, BLOCK_SIZE_X, GPU_ID)
 
-    query = torch.randint(0, 100, (seq_length, head_dim), dtype=torch.float32)
-    key = torch.randint(0, 100, (seq_length, head_dim), dtype=torch.float32)
-    value = torch.randint(0, 100, (seq_length, head_dim), dtype=torch.float32)
+    query = torch.randint(0, 100, (seq_length, head_dim), dtype=torch.float32).to(GPU_ID)
+    key = torch.randint(0, 100, (seq_length, head_dim), dtype=torch.float32).to(GPU_ID)
+    value = torch.randint(0, 100, (seq_length, head_dim), dtype=torch.float32).to(GPU_ID)
 
     print(attn.forward([query, key, value]))

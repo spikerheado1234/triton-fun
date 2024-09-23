@@ -72,11 +72,13 @@ def r_spmm_kernel_row_maj_row_comp(
     loop_end : tl.constexpr = tl.load(span_loop_end + tl.program_id(axis=1), mask=True)
     ## Opt-2: transformation-alignment. (TODO(ahangupta): finish implementing at a later date.)
 
+    ## Triton ast to ttir throws an exception if we don't re-assign loop_end to a temporary variable. -> This is probably a bug in the lowering process.
+    loop_end_temp = loop_end
+
     for i in range(
-        tl.floor(tl.div_rn(loop_start, inner_tile)), 
-        tl.cdiv(loop_end.to(tl.int64), inner_tile)
+        tl.floor(tl.div_rn(loop_start, inner_tile)).to(tl.int32), 
+        tl.ceil(loop_end_temp / inner_tile).to(tl.int32)
         ):
-    #for i in range(tl.cdiv(k, inner_tile)):
 
         ## Constraint one, OOB along the leading dimensions.
         sparse_x_col_idxs = (tl.div_rn(dense_col_idxs - block_translations, block_linear_trfs)).to(tl.int64)
