@@ -75,7 +75,8 @@ def r_softmax_kernel(
 
     tl.store(out_ptr + ptrs, softmax_out, mask=mask_ptrs)
 
-def rsoftmax_preamble(mask : list[list[int]], output_shape: tuple[int], BLOCK_SIZE_X : int, GPU_ID : int):
+def rsoftmax_preamble(mask : list[list[int]], output_shape: tuple[int], 
+                      BLOCK_SIZE_X : int, GPU_ID : int, out_dtype : torch.dtype):
 
     ## We have to pass in the next power of two as the trailing_dim.
     trailing_dim_pow_two = 2**ceil(log2(output_shape[-1]))
@@ -83,7 +84,7 @@ def rsoftmax_preamble(mask : list[list[int]], output_shape: tuple[int], BLOCK_SI
     full_shape = output_shape
 
     ## First we create the output tensor.
-    output : torch.Tensor = torch.empty(full_shape, dtype=torch.float32).to(GPU_ID)
+    output : torch.Tensor = torch.empty(full_shape, dtype=out_dtype).to(GPU_ID)
 
     ## Finally, we can launch the kernel
     grid_dim = (triton.cdiv(len(mask), BLOCK_SIZE_X), output_shape[0]*output_shape[1])
@@ -149,7 +150,7 @@ def is_correct(
 ## Compute the softmax over mask. -> mask is size [m, n]. This is its "dense" size.
 def test(
         m: int, n : int, num_heads: int, batch_size: int, mask : list[list[int]], 
-        GPU_ID : int, BLOCK_SIZE_X : int,
+        GPU_ID : int, BLOCK_SIZE_X : int, out_dtype : torch.dtype
         ):
 
     assert m==n, "We only need to consider the case when m=n."
@@ -163,7 +164,8 @@ def test(
 
     ## Call the softmax preamble.
     grid_dim, output, full_shape, trailing_dim_pow_two = rsoftmax_preamble(mask, (batch_size, num_heads, 
-                                                                                  m, trailing_dim_acsr), BLOCK_SIZE_X, GPU_ID)
+                                                                                  m, trailing_dim_acsr), BLOCK_SIZE_X, GPU_ID,
+                                                                                  out_dtype)
 
     inp : torch.Tensor = torch.randint(0, 100, full_shape,
                                        dtype=torch.float32).to(GPU_ID)
@@ -197,11 +199,12 @@ if __name__ == "__main__":
         batch_size : int = 2
         GPU_ID : Any = 'cpu'
         BLOCK_SIZE_X : int = 16
+        out_dtype : torch.dtype = torch.bfloat16
 
         ## Instantiate a mask.
         mask = create_blocked_mask(n, p)
 
-        test(m, n, num_heads, batch_size, mask, GPU_ID, BLOCK_SIZE_X)
+        test(m, n, num_heads, batch_size, mask, GPU_ID, BLOCK_SIZE_X, out_dtype)
 
 
     def test_two():
@@ -213,11 +216,12 @@ if __name__ == "__main__":
         num_heads : int = 2
         batch_size : int = 2
         BLOCK_SIZE_X : int = 16
+        out_dtype : torch.dtype = torch.bfloat16
 
         ## Instantiate a mask.
         mask = create_blocked_mask(n, p)
 
-        test(m, n, num_heads, batch_size, mask, GPU_ID, BLOCK_SIZE_X)
+        test(m, n, num_heads, batch_size, mask, GPU_ID, BLOCK_SIZE_X, out_dtype)
 
     def test_three():
 
@@ -228,11 +232,12 @@ if __name__ == "__main__":
         num_heads : int = 2
         batch_size : int = 2
         BLOCK_SIZE_X : int = 16
+        out_dtype : torch.dtype = torch.bfloat16
 
         ## Instantiate a mask.
         mask = create_blocked_mask(n, p)
 
-        test(m, n, num_heads, batch_size, mask, GPU_ID, BLOCK_SIZE_X)
+        test(m, n, num_heads, batch_size, mask, GPU_ID, BLOCK_SIZE_X, out_dtype)
 
 
     def test_four():
@@ -244,11 +249,12 @@ if __name__ == "__main__":
         num_heads : int = 2
         batch_size : int = 2
         BLOCK_SIZE_X : int = 16
+        out_dtype : torch.dtype = torch.bfloat16
 
         ## Instantiate a mask.
         mask = create_blocked_mask(n, p)
 
-        test(m, n, num_heads, batch_size, mask, GPU_ID, BLOCK_SIZE_X)
+        test(m, n, num_heads, batch_size, mask, GPU_ID, BLOCK_SIZE_X, out_dtype)
 
     def test_five():
 
@@ -259,11 +265,12 @@ if __name__ == "__main__":
         num_heads : int = 2
         batch_size : int = 2
         BLOCK_SIZE_X : int = 16
+        out_dtype : torch.dtype = torch.bfloat16
 
         ## Instantiate a mask.
         mask = create_blocked_mask(n, p)
 
-        test(m, n, num_heads, batch_size, mask, GPU_ID, BLOCK_SIZE_X)
+        test(m, n, num_heads, batch_size, mask, GPU_ID, BLOCK_SIZE_X, out_dtype)
 
     def test_six():
 
@@ -274,11 +281,12 @@ if __name__ == "__main__":
         num_heads : int = 2
         batch_size : int = 2
         BLOCK_SIZE_X : int = 16
+        out_dtype : torch.dtype = torch.bfloat16
 
         ## Instantiate a mask.
         mask = create_blocked_mask(n, p)
 
-        test(m, n, num_heads, batch_size, mask, GPU_ID, BLOCK_SIZE_X)
+        test(m, n, num_heads, batch_size, mask, GPU_ID, BLOCK_SIZE_X, out_dtype)
 
     def test_seven():
 
@@ -289,11 +297,12 @@ if __name__ == "__main__":
         num_heads : int = 2
         batch_size : int = 2
         BLOCK_SIZE_X : int = 16
+        out_dtype : torch.dtype = torch.bfloat16
 
         ## Instantiate a mask.
         mask = create_blocked_mask(n, p)
 
-        test(m, n, num_heads, batch_size, mask, GPU_ID, BLOCK_SIZE_X)
+        test(m, n, num_heads, batch_size, mask, GPU_ID, BLOCK_SIZE_X, out_dtype)
 
     def test_eight():
 
@@ -304,11 +313,12 @@ if __name__ == "__main__":
         num_heads : int = 2
         batch_size : int = 2
         BLOCK_SIZE_X : int = 16
+        out_dtype : torch.dtype = torch.bfloat16
 
         ## Instantiate a mask.
         mask = create_blocked_mask(n, p)
 
-        test(m, n, num_heads, batch_size, mask, GPU_ID, BLOCK_SIZE_X)
+        test(m, n, num_heads, batch_size, mask, GPU_ID, BLOCK_SIZE_X, out_dtype)
 
     def test_nine():
 
@@ -319,11 +329,12 @@ if __name__ == "__main__":
         num_heads : int = 2
         batch_size : int = 2
         BLOCK_SIZE_X : int = 16
+        out_dtype : torch.dtype = torch.bfloat16
 
         ## Instantiate a mask.
         mask = create_blocked_mask(n, p)
 
-        test(m, n, num_heads, batch_size, mask, GPU_ID, BLOCK_SIZE_X)
+        test(m, n, num_heads, batch_size, mask, GPU_ID, BLOCK_SIZE_X, out_dtype)
 
     ## These are pretty small tests.
     test_one()

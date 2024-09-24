@@ -15,6 +15,7 @@ class RegularAttention(nn.Module):
             self, batch: int, seq_length: int, num_heads: 
             int, head_dim : int, mask : list[list[int]], 
             BLOCK_SIZE_Y : int, BLOCK_SIZE_X : int, GPU_ID : Any,
+            out_dtype : torch.dtype
             ):
         super().__init__()
 
@@ -26,14 +27,17 @@ class RegularAttention(nn.Module):
 
         ## rSDDMM preamble.
         rsddmm_output, rsddmm_grid_dim, \
-        rsddmm_tb_map_x, rsddmm_tb_map_y = rsddmm_preamble(mask, (batch, num_heads, seq_length, acsr_trailing_dim), BLOCK_SIZE_X, BLOCK_SIZE_Y, GPU_ID)
+        rsddmm_tb_map_x, rsddmm_tb_map_y = rsddmm_preamble(mask, (batch, num_heads, seq_length, acsr_trailing_dim), 
+                                                           BLOCK_SIZE_X, BLOCK_SIZE_Y, GPU_ID, out_dtype)
 
         ## rSoftmax preamble.
         rsoftmax_grid_dim, rsoftmax_output, rsoftmax_full_shape, \
-            rsoftmax_trailing_dim_pow_two = rsoftmax_preamble(mask, (batch, num_heads, seq_length, acsr_trailing_dim), BLOCK_SIZE_X, GPU_ID)
+            rsoftmax_trailing_dim_pow_two = rsoftmax_preamble(mask, (batch, num_heads, seq_length, acsr_trailing_dim), 
+                                                              BLOCK_SIZE_X, GPU_ID, out_dtype)
 
         ## rSpMM preamble.
-        rspmm_output, rspmm_grid_dim, rspmm_trailing_dim_acsr =  rspmm_preamble(mask, (batch, num_heads, seq_length, head_dim), BLOCK_SIZE_X, BLOCK_SIZE_Y, GPU_ID)
+        rspmm_output, rspmm_grid_dim, rspmm_trailing_dim_acsr =  rspmm_preamble(mask, (batch, num_heads, seq_length, head_dim), 
+                                                                                BLOCK_SIZE_X, BLOCK_SIZE_Y, GPU_ID, out_dtype)
 
         ## Set variables accordingly.
 
@@ -107,15 +111,16 @@ if __name__ == '__main__':
     BLOCK_SIZE_Y : int = 16
     GPU_ID : Any = 0
     p : int = 4092  ## Sparsity parameter.
+    out_dtype : torch.dtype = torch.bfloat16
     mask : list[list[int]] = create_windowed_mask(seq_length, p)
 
-    attn = RegularAttention(batch, seq_length, heads, head_dim, mask, BLOCK_SIZE_Y, BLOCK_SIZE_X, GPU_ID)
+    attn = RegularAttention(batch, seq_length, heads, head_dim, mask, 
+                            BLOCK_SIZE_Y, BLOCK_SIZE_X, GPU_ID, out_dtype)
 
-    query = torch.randint(0, 100, (batch, heads, seq_length, head_dim), dtype=torch.float32).to(GPU_ID)
+    query = torch.randint(0, 100, (batch, heads, seq_length, head_dim), dtype=out_dtype).to(GPU_ID)
     ## Key should have the outer two dims transposed.
-    key = torch.randint(0, 100, (batch, heads, head_dim, seq_length), dtype=torch.bfloat16).to(GPU_ID)
-    value = torch.randint(0, 100, (batch, heads, seq_length, head_dim), dtype=torch.bfloat16).to(GPU_ID)
-    print('finished!')
+    key = torch.randint(0, 100, (batch, heads, head_dim, seq_length), dtype=out_dtype).to(GPU_ID)
+    value = torch.randint(0, 100, (batch, heads, seq_length, head_dim), dtype=out_dtype).to(GPU_ID)
     attn.forward([query, key, value])
 
     import time

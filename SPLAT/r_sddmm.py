@@ -152,9 +152,9 @@ def gen_block_mappings(mask : list[list[int]], BLOCK_HEIGHT : int,
 
 
 def rsddmm_preamble(mask : list[list[int]], output_shape: tuple[int], BLOCK_SIZE_X : int,
-                    BLOCK_SIZE_Y : int, GPU_ID : int):
+                    BLOCK_SIZE_Y : int, GPU_ID : int, out_dtype : torch.dtype):
 
-    output : torch.Tensor = torch.empty((output_shape), dtype=torch.float32).to(GPU_ID)
+    output : torch.Tensor = torch.empty((output_shape), dtype=out_dtype).to(GPU_ID)
 
     ## Next, we compute the tiling blocks.
     tb_map_x, tb_map_y = gen_block_mappings(mask, BLOCK_SIZE_Y, BLOCK_SIZE_X, GPU_ID)
@@ -226,13 +226,13 @@ def is_correct(out_torch : torch.Tensor, out_rsddmm : torch.Tensor,
 
 ## Multiply a: m*k and k*n matrix.
 def test(m: int, k : int, n : int, num_heads : int, batch_size : int, 
-         mask : list[list[int]], GPU_ID : int, BLOCK_SIZE_Y : int, BLOCK_SIZE_X : int):
+         mask : list[list[int]], GPU_ID : int, BLOCK_SIZE_Y : int, BLOCK_SIZE_X : int, out_dtype : torch.dtype):
     ## Some simple test-cases for me to try out.
     assert m==n, "We only need to consider the case when m=n."
     #left : torch.Tensor = torch.randn((m,k),dtype=torch.float32).to(GPU_ID)
     #right : torch.Tensor = torch.randn((k,n),dtype=torch.float32).to(GPU_ID)
-    left : torch.Tensor = torch.randint(0, 100, (batch_size,num_heads,m,k),dtype=torch.float32).to(GPU_ID)
-    right : torch.Tensor = torch.randint(0, 100, (batch_size,num_heads,k,n),dtype=torch.float32).to(GPU_ID)
+    left : torch.Tensor = torch.randint(0, 100, (batch_size,num_heads,m,k),dtype=out_dtype).to(GPU_ID)
+    right : torch.Tensor = torch.randint(0, 100, (batch_size,num_heads,k,n),dtype=out_dtype).to(GPU_ID)
 
     dTos_linear_transformations, dTos_translations, \
     sTod_linear_transformations, sTod_translations, nnzs, \
@@ -241,7 +241,8 @@ def test(m: int, k : int, n : int, num_heads : int, batch_size : int,
         )
     
     output_tensor, grid_dim, \
-    tb_map_x, tb_map_y = rsddmm_preamble(mask, (batch_size, num_heads, m, acsr_trailing_dimension), BLOCK_SIZE_X, BLOCK_SIZE_Y, GPU_ID)
+    tb_map_x, tb_map_y = rsddmm_preamble(mask, (batch_size, num_heads, m, acsr_trailing_dimension), 
+                                         BLOCK_SIZE_X, BLOCK_SIZE_Y, GPU_ID, out_dtype)
 
     ## Call the rsddmm launcher.
     rsddmm_output, sTod_linear_transformations, \
@@ -273,11 +274,12 @@ if __name__ == "__main__":
         batch_size : int = 2
         BLOCK_SIZE_Y : int = 16
         BLOCK_SIZE_X : int = 16
+        out_dtype : torch.dtype = torch.bfloat16
 
         ## Instantiate a mask.
         mask = create_blocked_mask(n, p)
 
-        test(m, k, n, num_heads, batch_size, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X)
+        test(m, k, n, num_heads, batch_size, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X, torch.bfloat16)
 
     def test_two():
         ## Basice parameters to multiply: m*k by k*n -> m*n matrix.
@@ -290,11 +292,12 @@ if __name__ == "__main__":
         batch_size : int = 2
         BLOCK_SIZE_Y : int = 16
         BLOCK_SIZE_X : int = 16
+        out_dtype : torch.dtype = torch.bfloat16
 
         ## Instantiate a mask.
         mask = create_blocked_mask(n, p)
 
-        test(m, k, n, num_heads, batch_size, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X)
+        test(m, k, n, num_heads, batch_size, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X, out_dtype)
 
     def test_three():
         ## Basice parameters to multiply: m*k by k*n -> m*n matrix.
@@ -307,11 +310,12 @@ if __name__ == "__main__":
         batch_size : int = 2
         BLOCK_SIZE_Y : int = 16
         BLOCK_SIZE_X : int = 16
+        out_dtype : torch.dtype = torch.bfloat16
 
         ## Instantiate a mask.
         mask = create_blocked_mask(n, p)
 
-        test(m, k, n, num_heads, batch_size, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X)
+        test(m, k, n, num_heads, batch_size, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X, out_dtype)
 
     def test_four():
         ## Basice parameters to multiply: m*k by k*n -> m*n matrix.
@@ -324,11 +328,12 @@ if __name__ == "__main__":
         batch_size : int = 2
         BLOCK_SIZE_Y : int = 16
         BLOCK_SIZE_X : int = 16
+        out_dtype : torch.dtype = torch.bfloat16
 
         ## Instantiate a mask.
         mask = create_blocked_mask(n, p)
 
-        test(m, k, n, num_heads, batch_size, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X)
+        test(m, k, n, num_heads, batch_size, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X, out_dtype)
 
     def test_five():
         ## Basice parameters to multiply: m*k by k*n -> m*n matrix.
@@ -339,11 +344,12 @@ if __name__ == "__main__":
         GPU_ID : int = 0
         BLOCK_SIZE_Y : int = 16
         BLOCK_SIZE_X : int = 16
+        out_dtype : torch.dtype = torch.bfloat16
 
         ## Instantiate a mask.
         mask = create_blocked_mask(n, p)
 
-        test(m, k, n, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X)
+        test(m, k, n, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X, out_dtype)
 
     def test_six():
         ## Basice parameters to multiply: m*k by k*n -> m*n matrix.
@@ -354,11 +360,12 @@ if __name__ == "__main__":
         GPU_ID : int = 0
         BLOCK_SIZE_Y : int = 16
         BLOCK_SIZE_X : int = 16
+        out_dtype : torch.dtype = torch.bfloat16
 
         ## Instantiate a mask.
         mask = create_blocked_mask(n, p)
 
-        test(m, k, n, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X)
+        test(m, k, n, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X, out_dtype)
 
     def test_seven():
         ## Basice parameters to multiply: m*k by k*n -> m*n matrix.
@@ -369,11 +376,12 @@ if __name__ == "__main__":
         GPU_ID : int = 0
         BLOCK_SIZE_Y : int = 16
         BLOCK_SIZE_X : int = 16
+        out_dtype : torch.dtype = torch.bfloat16
 
         ## Instantiate a mask.
         mask = create_blocked_mask(n, p)
 
-        test(m, k, n, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X)
+        test(m, k, n, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X, out_dtype)
 
     def test_eight():
         ## Basice parameters to multiply: m*k by k*n -> m*n matrix.
@@ -384,11 +392,12 @@ if __name__ == "__main__":
         GPU_ID : int = 0
         BLOCK_SIZE_Y : int = 16
         BLOCK_SIZE_X : int = 16
+        out_dtype : torch.dtype = torch.bfloat16
 
         ## Instantiate a mask.
         mask = create_blocked_mask(n, p)
 
-        test(m, k, n, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X)
+        test(m, k, n, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X, out_dtype)
 
     def test_nine():
         ## Basice parameters to multiply: m*k by k*n -> m*n matrix.
@@ -399,11 +408,12 @@ if __name__ == "__main__":
         GPU_ID : int = 0
         BLOCK_SIZE_Y : int = 16
         BLOCK_SIZE_X : int = 16
+        out_dtype : torch.dtype = torch.bfloat16
 
         ## Instantiate a mask.
         mask = create_blocked_mask(n, p)
 
-        test(m, k, n, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X)
+        test(m, k, n, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X, out_dtype)
 
     ## These are pretty small tests.
     test_one()
@@ -426,11 +436,12 @@ if __name__ == "__main__":
         GPU_ID : int = 0
         BLOCK_SIZE_Y : int = 16
         BLOCK_SIZE_X : int = 16
+        out_dtype : torch.dtype = torch.bfloat16
 
         ## Instantiate a mask.
         mask = create_blocked_mask(n, p)
 
-        test(m, k, n, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X)
+        test(m, k, n, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X, out_dtype)
 
     def test_eleven():
         ## Basice parameters to multiply: m*k by k*n -> m*n matrix.
@@ -441,11 +452,12 @@ if __name__ == "__main__":
         GPU_ID : int = 0
         BLOCK_SIZE_Y : int = 16
         BLOCK_SIZE_X : int = 16
+        out_dtype : torch.dtype = torch.bfloat16
 
         ## Instantiate a mask.
         mask = create_blocked_mask(n, p)
 
-        test(m, k, n, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X)
+        test(m, k, n, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X, out_dtype)
 
     def test_twelve():
         ## Basice parameters to multiply: m*k by k*n -> m*n matrix.
@@ -456,11 +468,12 @@ if __name__ == "__main__":
         GPU_ID : int = 0
         BLOCK_SIZE_Y : int = 16
         BLOCK_SIZE_X : int = 16
+        out_dtype : torch.dtype = torch.bfloat16
 
         ## Instantiate a mask.
         mask = create_blocked_mask(n, p)
 
-        test(m, k, n, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X)
+        test(m, k, n, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X, out_dtype)
 
     test_ten()
     test_eleven()
