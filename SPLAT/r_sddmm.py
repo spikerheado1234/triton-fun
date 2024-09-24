@@ -36,7 +36,7 @@ def rsddmm_kernel(x_ptr, y_ptr,
     x_ptrs = batch_head_offset_x_input + by_start*k + tl.arange(0, BLOCK_SIZE_Y)[:,None]*k + tl.arange(0, inner_tile_dim)[None,:]
     y_ptrs = batch_head_offset_y_input + bx_start + tl.arange(0, inner_tile_dim)[:,None]*n + tl.arange(0, BLOCK_SIZE_X)[None,:]
 
-    accumulator = tl.zeros((BLOCK_SIZE_Y, BLOCK_SIZE_X), dtype=out_ptr.dtype.element_ty)
+    accumulator = tl.zeros((BLOCK_SIZE_Y, BLOCK_SIZE_X), dtype=tl.float32)
 
     for i in range(tl.cdiv(k, inner_tile_dim)):
         
@@ -175,15 +175,11 @@ def rsddmm_launcher(x : torch.Tensor, y : torch.Tensor, output : torch.Tensor,
                     tb_map_x : torch.Tensor, tb_map_y : torch.Tensor, 
                     BLOCK_SIZE_Y : int, BLOCK_SIZE_X : int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
 
-    rsddmm_start = time.time()
     rsddmm_kernel[grid_dim](x,y,output, 
                             dTos_linear_transformations,dTos_translations, 
                             sTod_linear_transformations,sTod_translations,nnzs,
                             x.shape[2],y.shape[3],x.shape[3], trailing_dim, tb_map_x, tb_map_y,
                             BLOCK_SIZE_Y=BLOCK_SIZE_Y, BLOCK_SIZE_X=BLOCK_SIZE_X, num_warps=2)
-    rsddmm_end = time.time()
-    print(f'time taken splat: {(rsddmm_end - rsddmm_start):.15f}')
-    print(f'rsddmm kernel output shape: {output.shape}')
     ## We return the sTod arrays for correctness checking only.
     return (output, sTod_linear_transformations, sTod_translations, nnzs)
 

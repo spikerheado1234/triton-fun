@@ -67,7 +67,7 @@ def r_spmm_kernel_row_maj_row_comp(
         other=0.0
     ).reshape(BLOCK_SIZE_Y, 1)
 
-    accumulator = tl.zeros((BLOCK_SIZE_Y, BLOCK_SIZE_X), dtype=out_ptr.dtype.element_ty)
+    accumulator = tl.zeros((BLOCK_SIZE_Y, BLOCK_SIZE_X), dtype=tl.float32)
 
     ## Load metadata for optimsations.
 
@@ -154,7 +154,6 @@ def rspmm_launcher(x : torch.Tensor, y : torch.Tensor, output : torch.Tensor,
                    grid_dim : tuple[int], 
                    BLOCK_SIZE_Y : int, BLOCK_SIZE_X : int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
 
-    rsddmm_start = time.time()
     r_spmm_kernel_row_maj_row_comp[grid_dim](x,y,output, 
                                             dTos_linear_transformations,dTos_translations, 
                                             sTod_linear_transformations,sTod_translations,nnzs,
@@ -162,10 +161,6 @@ def rspmm_launcher(x : torch.Tensor, y : torch.Tensor, output : torch.Tensor,
                                             ## ACSR metadata for optimisations.
                                             span_loop_start, span_loop_end,
                                             BLOCK_SIZE_Y=BLOCK_SIZE_Y, BLOCK_SIZE_X=BLOCK_SIZE_X, num_warps=2)
-    #torch.cuda.synchronize()
-    rsddmm_end = time.time()
-    print(f'time taken splat: {(rsddmm_end - rsddmm_start):.15f}')
-    print(f'rspmm kernel output shape: {output.shape}')
     ## We return the sTod arrays for correctness checking only.
     return (output, sTod_linear_transformations, sTod_translations, nnzs)
 

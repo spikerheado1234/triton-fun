@@ -104,7 +104,7 @@ if __name__ == '__main__':
     ## Let's write one simple test to see if everything works end-to-end.
 
     batch : int = 2
-    heads : int = 2
+    heads : int = 16
     seq_length : int = 8192
     head_dim : int = 192
     BLOCK_SIZE_X : int = 16
