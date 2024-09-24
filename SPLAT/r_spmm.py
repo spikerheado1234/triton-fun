@@ -24,6 +24,10 @@ def r_spmm_kernel_row_maj_row_comp(
     ## Extract the blockIdx.x/y indices.
     by = tl.program_id(axis=1)
     bx = tl.program_id(axis=0)
+    bz = tl.program_id(axis=2)
+    batch_head_offset_output = bz * m * n
+    batch_head_offset_sparse_mat = bz * m * trailing_dim
+    batch_head_offset_dense_mat = bz * n * k
 
     ## The anchor point, top-left corner of the TB.
     by_start = by*BLOCK_SIZE_Y
@@ -33,7 +37,7 @@ def r_spmm_kernel_row_maj_row_comp(
     inner_tile : tl.constexpr = 128
     ## We use dense_col_idxs and internally convert them to sparse coordinates within the inner loop of this kernel.
     dense_col_idxs = tl.arange(0, inner_tile)[None, :].to(tl.int64) + tl.zeros((BLOCK_SIZE_Y,), dtype=tl.int64)[:, None] 
-    y_ptrs = bx_start + tl.arange(0, BLOCK_SIZE_X)[None, :] + tl.arange(0, inner_tile)[:, None]*n
+    y_ptrs = batch_head_offset_dense_mat + bx_start + tl.arange(0, BLOCK_SIZE_X)[None, :] + tl.arange(0, inner_tile)[:, None]*n
 
     ## We load the ACSR metadata, as this will be used to check properties within the inner sparse loop.
     block_translations = tl.load(
@@ -96,7 +100,7 @@ def r_spmm_kernel_row_maj_row_comp(
         mask_x_ptrs = mask_x_ptrs & (dense_col_idxs % block_linear_trfs == 0)
 
         ## Finally, we can convert the x_ptrs to sparse points in the ACSR.
-        sparse_x_ptrs = sparse_x_col_idxs + by_start*trailing_dim + i*inner_tile + tl.arange(0, BLOCK_SIZE_Y)[:,None]*trailing_dim 
+        sparse_x_ptrs = batch_head_offset_sparse_mat + sparse_x_col_idxs + by_start*trailing_dim + i*inner_tile + tl.arange(0, BLOCK_SIZE_Y)[:,None]*trailing_dim 
 
         ## The mask for the dense matrix. 
 
@@ -116,7 +120,7 @@ def r_spmm_kernel_row_maj_row_comp(
     ## Write-back logic.
     
     ## Now, write-backs are straightfoward since the output is dense.
-    write_ptrs = bx_start + tl.arange(0, BLOCK_SIZE_X)[None, :] + (by_start*n + tl.arange(0, BLOCK_SIZE_Y)[:, None]*n)
+    write_ptrs = batch_head_offset_output + bx_start + tl.arange(0, BLOCK_SIZE_X)[None, :] + (by_start*n + tl.arange(0, BLOCK_SIZE_Y)[:, None]*n)
     ## Check whether leading dimension OOB.
     write_ptrs_mask = bx_start + tl.arange(0, BLOCK_SIZE_X)[None, :] < m
     write_ptrs_mask = write_ptrs_mask & (by_start + tl.arange(0, BLOCK_SIZE_Y)[:, None] < n)
@@ -135,7 +139,7 @@ def rspmm_preamble(mask : list[list[int]], output_shape : tuple[int],
                                         dtype=torch.float32).to(GPU_ID)
 
     ## Finally, we can launch the kernel
-    grid_dim = (triton.cdiv(output_shape[1], BLOCK_SIZE_X),triton.cdiv(output_shape[0], BLOCK_SIZE_Y))
+    grid_dim = (triton.cdiv(output_shape[3], BLOCK_SIZE_X),triton.cdiv(output_shape[2], BLOCK_SIZE_Y),output_shape[0]*output_shape[1])
 
     return (
         output, grid_dim, trailing_dim_acsr
@@ -154,7 +158,7 @@ def rspmm_launcher(x : torch.Tensor, y : torch.Tensor, output : torch.Tensor,
     r_spmm_kernel_row_maj_row_comp[grid_dim](x,y,output, 
                                             dTos_linear_transformations,dTos_translations, 
                                             sTod_linear_transformations,sTod_translations,nnzs,
-                                            x.shape[0],y.shape[1],y.shape[0], acsr_trailing_dim,
+                                            x.shape[2],y.shape[3],y.shape[2], acsr_trailing_dim,
                                             ## ACSR metadata for optimisations.
                                             span_loop_start, span_loop_end,
                                             BLOCK_SIZE_Y=BLOCK_SIZE_Y, BLOCK_SIZE_X=BLOCK_SIZE_X, num_warps=2)
@@ -168,7 +172,8 @@ def rspmm_launcher(x : torch.Tensor, y : torch.Tensor, output : torch.Tensor,
 def is_correct(
         left_tensor : torch.Tensor, right_tensor : torch.Tensor,
         out_rspmm : torch.Tensor, sTod_linear_transofrmations : torch.Tensor, 
-        sTod_translations : torch.Tensor, nnzs: torch.Tensor, mask : list[list[int]]
+        sTod_translations : torch.Tensor, nnzs: torch.Tensor, num_heads : int, batch_size : int,
+        mask : list[list[int]]
         ) -> bool:
 
     left_tensor_list = left_tensor.tolist()
@@ -190,22 +195,24 @@ def is_correct(
 
         return accum
 
-    for dense_row in range(len(mask)):
-        for dense_col in range(len(right_tensor_list[0])):
-            ## We convert to the dense index.
-            sparse_col = round(dense_col / sTod_linear_transformations_list[dense_row] - sTod_translations_list[dense_row])
-            ## Legality check for the sparse_col coordinate.
-            if sparse_col < nnzs_list[dense_row] and sparse_col >= 0 and dense_col % round(sTod_linear_transformations_list[dense_row]) == 0:
-                ## Now, we manually compute ground truth.
-                manual_answer = dot_product(left_tensor_list, right_tensor_list, 
-                                            dense_row, dense_col, 
-                                            sTod_linear_transformations_list[dense_row],
-                                            sTod_translations_list[dense_row], 
-                                            round(nnzs_list[dense_row])
-                                            )
-                if abs(manual_answer - out_rspmm_list[dense_row][dense_col]) > 1e-3:
-                    mse_error += abs(manual_answer - out_rspmm_list[dense_row][dense_col])
-                    num_deviations += 1
+    for b in range(batch_size):
+        for h in range(num_heads):
+            for dense_row in range(len(mask)):
+                for dense_col in range(len(right_tensor_list[0][0][0])):
+                    ## We convert to the dense index.
+                    sparse_col = round(dense_col / sTod_linear_transformations_list[dense_row] - sTod_translations_list[dense_row])
+                    ## Legality check for the sparse_col coordinate.
+                    if sparse_col < nnzs_list[dense_row] and sparse_col >= 0 and dense_col % round(sTod_linear_transformations_list[dense_row]) == 0:
+                        ## Now, we manually compute ground truth.
+                        manual_answer = dot_product(left_tensor_list[b][h], right_tensor_list[b][h], 
+                                                    dense_row, dense_col, 
+                                                    sTod_linear_transformations_list[dense_row],
+                                                    sTod_translations_list[dense_row], 
+                                                    round(nnzs_list[dense_row])
+                                                    )
+                        if abs(manual_answer - out_rspmm_list[b][h][dense_row][dense_col]) > 1e-3:
+                            mse_error += abs(manual_answer - out_rspmm_list[b][h][dense_row][dense_col])
+                            num_deviations += 1
 
     if num_deviations > 0:
         print(f'test case failed average mse: {mse_error}')
@@ -215,7 +222,8 @@ def is_correct(
         return True
 
 ## Multiply a: m*k and k*n matrix.
-def test(m: int, k : int, n : int, mask : list[list[int]], GPU_ID : Any, BLOCK_SIZE_Y : int, BLOCK_SIZE_X : int):
+def test(m: int, k : int, n : int, num_heads : int, 
+         batch_size : int, mask : list[list[int]], GPU_ID : Any, BLOCK_SIZE_Y : int, BLOCK_SIZE_X : int):
     ## Some simple test-cases for me to try out.
     assert m==n, "We only need to consider the case when m=n."
 
@@ -223,10 +231,10 @@ def test(m: int, k : int, n : int, mask : list[list[int]], GPU_ID : Any, BLOCK_S
     trailing_dim_acsr = max([reduce(lambda a,b: a+b, row, 0) for row in mask])
 
     left : torch.Tensor = torch.randint(0, 100, (
-        m, trailing_dim_acsr
+        batch_size, num_heads, m, trailing_dim_acsr
         ),dtype=torch.float32).to(GPU_ID)
 
-    right : torch.Tensor = torch.randint(0, 100, (k,n),dtype=torch.float32).to(GPU_ID)
+    right : torch.Tensor = torch.randint(0, 100, (batch_size, num_heads, k,n),dtype=torch.float32).to(GPU_ID)
 
     ## Create acsr.
     dTos_linear_transformations, dTos_translations, \
@@ -236,7 +244,7 @@ def test(m: int, k : int, n : int, mask : list[list[int]], GPU_ID : Any, BLOCK_S
         )
 
     ## Call rspmm preamble.
-    output_tensor, grid_dim, trailing_dim_acsr = rspmm_preamble(mask, (m, n), BLOCK_SIZE_X, BLOCK_SIZE_Y, GPU_ID)
+    output_tensor, grid_dim, trailing_dim_acsr = rspmm_preamble(mask, (batch_size, num_heads, m, n), BLOCK_SIZE_X, BLOCK_SIZE_Y, GPU_ID)
 
     ## Call the rsddmm launcher.
     rspmm_output, sTod_linear_transformations, sTod_translations, nnzs = rspmm_launcher(
@@ -252,7 +260,8 @@ def test(m: int, k : int, n : int, mask : list[list[int]], GPU_ID : Any, BLOCK_S
         left, right,
         rspmm_output, 
         sTod_linear_transformations, 
-        sTod_translations, nnzs, mask
+        sTod_translations, nnzs, 
+        num_heads, batch_size, mask
         )
 
 if __name__ == "__main__":
@@ -265,13 +274,15 @@ if __name__ == "__main__":
         k: int = 10
         p: int = 2 ## Sparsity parameter.
         GPU_ID : Any = 'cpu'
+        num_heads : int = 2
+        batch_size : int = 2
         BLOCK_SIZE_Y : int = 16
         BLOCK_SIZE_X : int = 16
 
         ## Instantiate a mask.
         mask = create_blocked_mask(n, p)
 
-        test(m, k, n, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X)
+        test(m, k, n, num_heads, batch_size, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X)
 
 
     def test_two():
@@ -281,13 +292,15 @@ if __name__ == "__main__":
         k: int = 10
         p: int = 5 ## Sparsity parameter.
         GPU_ID : Any = "cpu"
+        num_heads : int = 2
+        batch_size : int = 2
         BLOCK_SIZE_Y : int = 16
         BLOCK_SIZE_X : int = 16
 
         ## Instantiate a mask.
         mask = create_blocked_mask(n, p)
 
-        test(m, k, n, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X)
+        test(m, k, n, num_heads, batch_size, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X)
 
     def test_three():
         ## Basice parameters to multiply: m*k by k*n -> m*n matrix.
@@ -296,13 +309,15 @@ if __name__ == "__main__":
         k: int = 10
         p: int = 7 ## Sparsity parameter.
         GPU_ID : Any = 'cpu'
+        num_heads : int = 2
+        batch_size : int = 2
         BLOCK_SIZE_Y : int = 16
         BLOCK_SIZE_X : int = 16
 
         ## Instantiate a mask.
         mask = create_blocked_mask(n, p)
 
-        test(m, k, n, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X)
+        test(m, k, n, num_heads, batch_size, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X)
 
     def test_four():
         ## Basice parameters to multiply: m*k by k*n -> m*n matrix.
@@ -311,13 +326,15 @@ if __name__ == "__main__":
         k: int = 16
         p: int = 5 ## Sparsity parameter.
         GPU_ID : Any = 'cpu'
+        num_heads : int = 2
+        batch_size : int = 2
         BLOCK_SIZE_Y : int = 16
         BLOCK_SIZE_X : int = 16
 
         ## Instantiate a mask.
         mask = create_blocked_mask(n, p)
 
-        test(m, k, n, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X)
+        test(m, k, n, num_heads, batch_size, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X)
 
     def test_five():
         ## Basice parameters to multiply: m*k by k*n -> m*n matrix.
@@ -326,13 +343,15 @@ if __name__ == "__main__":
         k: int = 16
         p: int = 16 ## Sparsity parameter.
         GPU_ID : Any = 'cpu'
+        num_heads : int = 2
+        batch_size : int = 2
         BLOCK_SIZE_Y : int = 16
         BLOCK_SIZE_X : int = 16
 
         ## Instantiate a mask.
         mask = create_blocked_mask(n, p)
 
-        test(m, k, n, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X)
+        test(m, k, n, num_heads, batch_size, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X)
 
     def test_six():
         ## Basice parameters to multiply: m*k by k*n -> m*n matrix.
@@ -341,13 +360,15 @@ if __name__ == "__main__":
         k: int = 32
         p: int = 10 ## Sparsity parameter.
         GPU_ID : Any = 'cpu'
+        num_heads : int = 2
+        batch_size : int = 2
         BLOCK_SIZE_Y : int = 16
         BLOCK_SIZE_X : int = 16
 
         ## Instantiate a mask.
         mask = create_blocked_mask(n, p)
         
-        test(m, k, n, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X)
+        test(m, k, n, num_heads, batch_size, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X)
 
     def test_seven():
         ## Basice parameters to multiply: m*k by k*n -> m*n matrix.
@@ -356,13 +377,15 @@ if __name__ == "__main__":
         k: int = 32
         p: int = 20 ## Sparsity parameter.
         GPU_ID : Any = 'cpu'
+        num_heads : int = 2
+        batch_size : int = 2
         BLOCK_SIZE_Y : int = 16
         BLOCK_SIZE_X : int = 16
 
         ## Instantiate a mask.
         mask = create_blocked_mask(n, p)
 
-        test(m, k, n, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X)
+        test(m, k, n, num_heads, batch_size, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X)
 
     def test_eight():
         ## Basice parameters to multiply: m*k by k*n -> m*n matrix.
@@ -371,13 +394,15 @@ if __name__ == "__main__":
         k: int = 32
         p: int = 32 ## Sparsity parameter.
         GPU_ID : Any = 'cpu'
+        num_heads : int = 2
+        batch_size : int = 2
         BLOCK_SIZE_Y : int = 16
         BLOCK_SIZE_X : int = 16
 
         ## Instantiate a mask.
         mask = create_blocked_mask(n, p)
 
-        test(m, k, n, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X)
+        test(m, k, n, num_heads, batch_size, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X)
 
     def test_nine():
         ## Basice parameters to multiply: m*k by k*n -> m*n matrix.
@@ -386,13 +411,15 @@ if __name__ == "__main__":
         k: int = 128
         p: int = 57 ## Sparsity parameter.
         GPU_ID : Any = 'cpu'
+        num_heads : int = 2
+        batch_size : int = 2
         BLOCK_SIZE_Y : int = 16
         BLOCK_SIZE_X : int = 16
 
         ## Instantiate a mask.
         mask = create_blocked_mask(n, p)
 
-        test(m, k, n, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X)
+        test(m, k, n, num_heads, batch_size, mask, GPU_ID, BLOCK_SIZE_Y, BLOCK_SIZE_X)
 
     ## These are pretty small tests.
     test_one()
