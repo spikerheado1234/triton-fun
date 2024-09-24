@@ -36,7 +36,7 @@ def rsddmm_kernel(x_ptr, y_ptr,
     x_ptrs = batch_head_offset_x_input + by_start*k + tl.arange(0, BLOCK_SIZE_Y)[:,None]*k + tl.arange(0, inner_tile_dim)[None,:]
     y_ptrs = batch_head_offset_y_input + bx_start + tl.arange(0, inner_tile_dim)[:,None]*n + tl.arange(0, BLOCK_SIZE_X)[None,:]
 
-    accumulator = tl.zeros((BLOCK_SIZE_Y, BLOCK_SIZE_X), dtype=tl.float32)
+    accumulator = tl.zeros((BLOCK_SIZE_Y, BLOCK_SIZE_X), dtype=out_ptr.dtype.element_ty)
 
     for i in range(tl.cdiv(k, inner_tile_dim)):
         

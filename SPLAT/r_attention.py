@@ -101,19 +101,27 @@ if __name__ == '__main__':
 
     batch : int = 2
     heads : int = 2
-    seq_length : int = 10
-    head_dim : int = 10
+    seq_length : int = 8192
+    head_dim : int = 192
     BLOCK_SIZE_X : int = 16
     BLOCK_SIZE_Y : int = 16
     GPU_ID : Any = 0
-    p : int = 2  ## Sparsity parameter.
+    p : int = 4092  ## Sparsity parameter.
     mask : list[list[int]] = create_windowed_mask(seq_length, p)
 
     attn = RegularAttention(batch, seq_length, heads, head_dim, mask, BLOCK_SIZE_Y, BLOCK_SIZE_X, GPU_ID)
 
     query = torch.randint(0, 100, (batch, heads, seq_length, head_dim), dtype=torch.float32).to(GPU_ID)
     ## Key should have the outer two dims transposed.
-    key = torch.randint(0, 100, (batch, heads, head_dim, seq_length), dtype=torch.float32).to(GPU_ID)
-    value = torch.randint(0, 100, (batch, heads, seq_length, head_dim), dtype=torch.float32).to(GPU_ID)
+    key = torch.randint(0, 100, (batch, heads, head_dim, seq_length), dtype=torch.bfloat16).to(GPU_ID)
+    value = torch.randint(0, 100, (batch, heads, seq_length, head_dim), dtype=torch.bfloat16).to(GPU_ID)
+    print('finished!')
+    attn.forward([query, key, value])
 
-    print(attn.forward([query, key, value]))
+    import time
+
+    a = time.time()
+    attn.forward([query, key, value])
+    b = time.time()
+    print(f'time taken: {b-a}')
+    #print(attn.forward([query, key, value]))
