@@ -43,6 +43,17 @@ def create_windowed_mask(s : int, p : int) -> list[list[int]]:
 
     return mask
 
+def create_causal_windowed_mask(s : int, p : int) -> list[list[int]]:
+    mask = [[0 for _ in range(s)] for _ in range(s)]
+
+    for i in range(s):
+        for j in range(s):
+            if i-p <= j and j <= i+p:
+                if i >= j:
+                    mask[i][j] = 1
+
+    return mask
+
 ## This gives the mapping from dense -> sparse.
 @dataclass
 class AffineIndices:
@@ -96,21 +107,27 @@ def instantiate_metadata(mask, BLOCK_HEIGHT : int):
         ## We grab the first two non-zero elements.
         a = -1
         b = -1
-        for idx, col in enumerate(mask[row]):
-            if col == 1 and a ==-1:
-                a = idx
-            elif col == 1 and a != -1 and b == -1:
-                b = idx
-                break
-
-        assert a != -1 and b != -1, "Incorrect unpacking of affine-indices."
-
-        ## Here we solve a system of linear equations.
-        affine_indices = np.linalg.solve(np.array([[a, 1], [b, 1]]), np.array([0,1]))
         curr_nnz = reduce(lambda x,y : x+y, mask[row],0)
-        affine_indices_dTos.append(AffineIndices(affine_indices[0],affine_indices[1], curr_nnz))
-        affine_indices_sToD.append(AffineIndicesInt(round(1/affine_indices[0]), abs(affine_indices[1]), curr_nnz))
-        nnzs.append(curr_nnz)
+        if curr_nnz > 1:
+            for idx, col in enumerate(mask[row]):
+                if col == 1 and a ==-1:
+                    a = idx
+                elif col == 1 and a != -1 and b == -1:
+                    b = idx
+                    break
+
+            assert a != -1 and b != -1, "Incorrect unpacking of affine-indices."
+
+            ## Here we solve a system of linear equations.
+            affine_indices = np.linalg.solve(np.array([[a, 1], [b, 1]]), np.array([0,1]))
+            affine_indices_dTos.append(AffineIndices(affine_indices[0],affine_indices[1], curr_nnz))
+            affine_indices_sToD.append(AffineIndicesInt(round(1/affine_indices[0]), abs(affine_indices[1]), curr_nnz))
+            nnzs.append(curr_nnz)
+        else:
+            affine_indices = (1, 0)
+            affine_indices_dTos.append(AffineIndices(affine_indices[0],affine_indices[1], curr_nnz))
+            affine_indices_sToD.append(AffineIndicesInt(round(1/affine_indices[0]), abs(affine_indices[1]), curr_nnz))
+            nnzs.append(curr_nnz)
 
         ## Populate data for optimisations.
 

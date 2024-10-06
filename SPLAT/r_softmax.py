@@ -9,6 +9,55 @@ from math import log2, ceil
 
 import pdb
 
+## An interesting case-study when I have time. Why does the flat 1-d softmax kernel perform better.
+##    Look at the generated PTX. It seems like the presumed block -> concrete output mapping
+##    (i.e. the way we spatially decompose the blocks over tensors) massively impacts performance.
+
+@triton.jit
+def r_softmax_1d_kernel(
+    x_ptr, out_ptr, 
+    dTos_linear_trf, dTos_translations, 
+    sTod_linear_trf, sTod_translations, nnzs,
+    m, true_trailing_dim : tl.constexpr, power_two_trailing_dim: tl.constexpr, 
+):
+
+    bx = tl.program_id(axis=0)
+    by = tl.program_id(axis=1)
+    batch_head_offset = by * m * true_trailing_dim
+    ## TODO(ahangupta): use num_blocks in order to have another parameter to tune.
+    num_blocks = tl.num_programs(axis=0)
+
+    block_nnzs = tl.load(
+        ## Ptrs
+        nnzs + bx,
+        ## Mask
+        bx < m,
+        ## Default value.
+        other=0.0
+    )
+
+    ## We load the data.
+    edge_idx = block_nnzs 
+    ## RQ: what are the implications of unrolling the loop out into pointers vs. retaining the original loop?
+    ##   How will the generated code differ?
+    ptrs = batch_head_offset + bx*true_trailing_dim + tl.arange(0, power_two_trailing_dim)
+    
+    mask_ptrs = tl.arange(0, power_two_trailing_dim) < edge_idx
+    mask_ptrs = mask_ptrs & (bx < m)
+
+    rows = tl.load(x_ptr + ptrs, mask=mask_ptrs, other=-1e9)
+
+    ## For numerical stability.
+    max_val = tl.max(rows, axis=0)
+    rows -= max_val
+
+    numerator = tl.exp(rows)
+    denominator = tl.sum(numerator, axis=0)
+
+    softmax_out = numerator / denominator
+
+    tl.store(out_ptr + ptrs, softmax_out, mask=mask_ptrs)
+
 @triton.jit
 def r_softmax_kernel(
     x_ptr, out_ptr, 
@@ -24,25 +73,6 @@ def r_softmax_kernel(
     ## TODO(ahangupta): use num_blocks in order to have another parameter to tune.
     num_blocks = tl.num_programs(axis=0)
     bx_start = bx*BLOCK_SIZE_X
-
-    ## Extract the metadata out first.
-    block_translations = tl.load(
-        ## Ptrs
-        sTod_translations + tl.arange(0, BLOCK_SIZE_X)[None, :] + bx_start,
-        ## Mask
-        tl.arange(0, BLOCK_SIZE_X)[None, :] + bx_start < m,
-        ## Default value.
-        other=0.0
-    ).reshape(BLOCK_SIZE_X, 1)
-
-    block_linear_trfs = tl.load(
-        ## Ptrs
-        sTod_linear_trf + tl.arange(0, BLOCK_SIZE_X)[None, :] + bx_start,
-        ## Mask
-        tl.arange(0, BLOCK_SIZE_X)[None, :] + bx_start < m,
-        ## Default value.
-        other=1
-    ).reshape(BLOCK_SIZE_X, 1)
 
     block_nnzs = tl.load(
         ## Ptrs
@@ -101,12 +131,19 @@ def rsoftmax_launcher(
         nnzs : torch.Tensor, grid_dim : tuple[int], BLOCK_SIZE_X : int
          ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
 
-    r_softmax_kernel[grid_dim](x,output,
+    # r_softmax_kernel[grid_dim](x,output,
+    #                     dTos_linear_transformations,dTos_translations, 
+    #                     sTod_linear_transformations,sTod_translations,nnzs,
+    #                     x.shape[2],acsr_trailing_dim_true, 
+    #                     acsr_trailing_dim_power_two,
+    #                     BLOCK_SIZE_X=BLOCK_SIZE_X, num_warps=2
+    #                     )
+
+    r_softmax_1d_kernel[grid_dim](x,output,
                         dTos_linear_transformations,dTos_translations, 
                         sTod_linear_transformations,sTod_translations,nnzs,
                         x.shape[2],acsr_trailing_dim_true, 
-                        acsr_trailing_dim_power_two,
-                        BLOCK_SIZE_X=BLOCK_SIZE_X, num_warps=2
+                        acsr_trailing_dim_power_two, num_warps=2
                         )
 
     ## We return the sTod arrays for correctness checking only.
@@ -198,7 +235,7 @@ if __name__ == "__main__":
         num_heads : int = 2
         batch_size : int = 2
         GPU_ID : Any = 'cpu'
-        BLOCK_SIZE_X : int = 16
+        BLOCK_SIZE_X : int = 1
         out_dtype : torch.dtype = torch.bfloat16
 
         ## Instantiate a mask.

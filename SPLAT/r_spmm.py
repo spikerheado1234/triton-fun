@@ -78,7 +78,7 @@ def r_spmm_kernel_row_maj_row_comp(
 
     ## Triton ast to ttir throws an exception if we don't re-assign loop_end to a temporary variable. -> This is probably a bug in the lowering process.
     loop_end_temp = loop_end
-
+    pdb.set_trace()
     for i in range(
         tl.floor(tl.div_rn(loop_start, inner_tile)).to(tl.int32), 
         tl.ceil(loop_end_temp / inner_tile).to(tl.int32)

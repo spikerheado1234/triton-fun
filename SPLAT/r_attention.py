@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from acsr_helpers import create_acsr, create_blocked_mask, create_windowed_mask
+from acsr_helpers import create_acsr, create_blocked_mask, create_windowed_mask, create_causal_windowed_mask
 from typing import AnyStr, Any
 from r_softmax import rsoftmax_launcher, rsoftmax_preamble
 from r_spmm import rspmm_launcher, rspmm_preamble
@@ -112,7 +112,8 @@ if __name__ == '__main__':
     GPU_ID : Any = 0
     p : int = 4092  ## Sparsity parameter.
     out_dtype : torch.dtype = torch.bfloat16
-    mask : list[list[int]] = create_windowed_mask(seq_length, p)
+    #mask : list[list[int]] = create_windowed_mask(seq_length, p)
+    mask : list[list[int]] = create_causal_windowed_mask(seq_length, p)
 
     attn = RegularAttention(batch, seq_length, heads, head_dim, mask, 
                             BLOCK_SIZE_Y, BLOCK_SIZE_X, GPU_ID, out_dtype)
