@@ -99,6 +99,16 @@ class RegularAttention(nn.Module):
         out = self.rspmm_output
         return out
 
+def unit(q,k,v,w_q,w_k,w_v, attn : RegularAttention):
+    q = torch.einsum('bsd, dnh -> bsnh', q, w_q)
+    k = torch.einsum('bsd, dnh -> bsnh', k, w_k)
+    v = torch.einsum('bsd, dnh -> bsnh', v, w_v)
+    # q = torch.matmul(q, w_q)
+    # k = torch.matmul(k, w_k)
+    # v = torch.matmul(v, w_v)
+    out = attn([q, k.transpose(2,3),v])
+    return out
+
 
 if __name__ == '__main__':
     ## Let's write one simple test to see if everything works end-to-end.
@@ -109,25 +119,32 @@ if __name__ == '__main__':
     head_dim : int = 64
     BLOCK_SIZE_X : int = 16
     BLOCK_SIZE_Y : int = 16
-    GPU_ID : Any = 0
+    GPU_ID : Any = 'cpu'
     p : int = 128  ## Sparsity parameter.
-    out_dtype : torch.dtype = torch.bfloat16
+    out_dtype : torch.dtype = torch.float32
     mask : list[list[int]] = create_windowed_mask(seq_length, p)
     #mask : list[list[int]] = create_causal_windowed_mask(seq_length, p)
 
     attn = RegularAttention(batch, seq_length, heads, head_dim, mask, 
                             BLOCK_SIZE_Y, BLOCK_SIZE_X, GPU_ID, out_dtype)
 
-    query = torch.randint(0, 100, (batch, heads, seq_length, head_dim), dtype=out_dtype).to(GPU_ID)
+    query = torch.rand((batch, seq_length, head_dim*heads))
+    key = torch.rand((batch, seq_length, head_dim*heads))
+    value = torch.rand((batch, seq_length, head_dim*heads))
+    #query = torch.randint(0, 100, (batch, heads, seq_length, head_dim), dtype=out_dtype).to(GPU_ID)
     ## Key should have the outer two dims transposed.
-    key = torch.randint(0, 100, (batch, heads, head_dim, seq_length), dtype=out_dtype).to(GPU_ID)
-    value = torch.randint(0, 100, (batch, heads, seq_length, head_dim), dtype=out_dtype).to(GPU_ID)
-    attn.forward([query, key, value])
+    #key = torch.randint(0, 100, (batch, heads, head_dim, seq_length), dtype=out_dtype).to(GPU_ID)
+    #value = torch.randint(0, 100, (batch, heads, seq_length, head_dim), dtype=out_dtype).to(GPU_ID)
+    w_query = torch.rand((head_dim*heads, heads, head_dim), dtype=out_dtype).to(GPU_ID)
+    w_key = torch.rand((head_dim*heads, heads, head_dim), dtype=out_dtype).to(GPU_ID)
+    w_value = torch.rand((head_dim*heads, heads, head_dim), dtype=out_dtype).to(GPU_ID)
+    unit(query,key,value,w_query,w_key,w_value, attn)
+    unit(query,key,value,w_query,w_key,w_value, attn)
 
     import time
 
     a = time.time()
-    attn.forward([query, key, value])
+    unit(query,key,value,w_query,w_key,w_value, attn)
     b = time.time()
     print(f'time taken: {b-a}')
     #print(attn.forward([query, key, value]))
