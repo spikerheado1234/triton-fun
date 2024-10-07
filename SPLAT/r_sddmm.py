@@ -48,7 +48,7 @@ def rsddmm_kernel(x_ptr, y_ptr,
         x_tile = tl.load(x_ptr + x_ptrs, mask=mask_x_ptrs, other=0.0)
         y_tile = tl.load(y_ptr + y_ptrs, mask=mask_y_ptrs, other=0.0)
 
-        accumulator += tl.dot(x_tile, y_tile)
+        accumulator += tl.dot(x_tile, y_tile, allow_tf32=True)
 
         ## Increment x and y pointers here now.
         x_ptrs += inner_tile_dim
@@ -265,7 +265,7 @@ if __name__ == "__main__":
         m: int = 10
         k: int = 10
         p: int = 2 ## Sparsity parameter.
-        GPU_ID : Any = 'cpu'
+        GPU_ID : Any = 0
         num_heads : int = 2
         batch_size : int = 2
         BLOCK_SIZE_Y : int = 16

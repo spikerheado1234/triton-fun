@@ -234,7 +234,7 @@ if __name__ == "__main__":
         p: int = 2 ## Sparsity parameter.
         num_heads : int = 2
         batch_size : int = 2
-        GPU_ID : Any = 'cpu'
+        GPU_ID : Any = 0
         BLOCK_SIZE_X : int = 1
         out_dtype : torch.dtype = torch.bfloat16
 

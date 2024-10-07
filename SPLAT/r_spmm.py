@@ -78,7 +78,6 @@ def r_spmm_kernel_row_maj_row_comp(
 
     ## Triton ast to ttir throws an exception if we don't re-assign loop_end to a temporary variable. -> This is probably a bug in the lowering process.
     loop_end_temp = loop_end
-    pdb.set_trace()
     for i in range(
         tl.floor(tl.div_rn(loop_start, inner_tile)).to(tl.int32), 
         tl.ceil(loop_end_temp / inner_tile).to(tl.int32)
@@ -270,7 +269,7 @@ if __name__ == "__main__":
         m: int = 10
         k: int = 10
         p: int = 2 ## Sparsity parameter.
-        GPU_ID : Any = 'cpu'
+        GPU_ID : Any = 0
         num_heads : int = 2
         batch_size : int = 2
         BLOCK_SIZE_Y : int = 16

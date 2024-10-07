@@ -103,17 +103,17 @@ class RegularAttention(nn.Module):
 if __name__ == '__main__':
     ## Let's write one simple test to see if everything works end-to-end.
 
-    batch : int = 2
-    heads : int = 16
-    seq_length : int = 8192
-    head_dim : int = 192
+    batch : int = 32
+    heads : int = 12
+    seq_length : int = 1024
+    head_dim : int = 64
     BLOCK_SIZE_X : int = 16
     BLOCK_SIZE_Y : int = 16
     GPU_ID : Any = 0
-    p : int = 4092  ## Sparsity parameter.
+    p : int = 128  ## Sparsity parameter.
     out_dtype : torch.dtype = torch.bfloat16
-    #mask : list[list[int]] = create_windowed_mask(seq_length, p)
-    mask : list[list[int]] = create_causal_windowed_mask(seq_length, p)
+    mask : list[list[int]] = create_windowed_mask(seq_length, p)
+    #mask : list[list[int]] = create_causal_windowed_mask(seq_length, p)
 
     attn = RegularAttention(batch, seq_length, heads, head_dim, mask, 
                             BLOCK_SIZE_Y, BLOCK_SIZE_X, GPU_ID, out_dtype)
